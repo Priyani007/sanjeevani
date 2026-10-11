@@ -1,99 +1,185 @@
 # Sanjeevani — AR Emergency First-Responder
 
+> *"Imagine someone next to you suddenly collapses. 112 has been called. What will you do with your hands for the next six minutes?"*
+
 **iQOO Hackathon 2026** · Android · Kotlin + Jetpack Compose + MediaPipe
 
-Sanjeevani is a real-time AR guide that detects medical emergencies through the camera and talks a bystander through the correct response — CPR, stroke (FAST), heart attack, and allergic reaction / anaphylaxis — until professional help arrives.
+[![Build](https://img.shields.io/badge/build-passing-brightgreen)](#build)
+[![Tests](https://img.shields.io/badge/tests-36%20passing-brightgreen)](#testing)
+[![SDK](https://img.shields.io/badge/minSdk-26-blue)](app/build.gradle.kts)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+---
+
+Bystander CPR **doubles or triples** cardiac arrest survival. Yet most people have never calibrated their hands, tempo, or posture under stress. Sanjeevani closes that gap — it is an on-device, privacy-first AR training and real-time guidance system that gives anyone a personal practice mirror before the moment that matters.
 
 *Sanskrit: संजीवनी — the life-restoring herb from the Ramayana.*
 
 ---
 
+## The problem
+
+| Barrier | Reality |
+|---------|---------|
+| Survival window | Brain damage begins in ~4 min; EMS median response is 6–8 min in urban India |
+| Skill decay | CPR technique degrades significantly within months of a classroom session |
+| Equipment cost | Feedback manikins with telemetry cost ₹50 000+; most people never touch one |
+| Scale | Smartphones are already in every pocket — the hardware is solved |
+
+Sanjeevani turns the camera already in your hand into a real-time coach.
+
+---
+
 ## What it does
 
-1. **Detect** — MediaPipe pose + hand landmarks classify the emergency from the camera feed
-2. **Confirm** — one-tap triage screen lets user select or confirm the emergency type
-3. **Guide** — deterministic FSM drives AR overlays + voice coaching specific to the emergency:
-   - **CPR**: hand-placement correction circle → real-time compression rate (target 100–120 BPM)
-   - **Stroke**: FAST face / arm / speech assessment with visual indicators
-   - **Heart attack**: conscious patient protocol (sit, loosen, aspirin, monitor)
-   - **Allergic reaction**: timed EpiPen sequence with AR injection site marker
+### Real-time emergency guidance
+
+Point your camera at the scene. Sanjeevani detects the situation and talks you through it:
+
+| Emergency | What you get |
+|-----------|-------------|
+| **Cardiac arrest / CPR** | AR circle on the sternum → hand-placement correction vector → live BPM rate coaching (target 100–120) → compression count |
+| **Stroke** | FAST assessment with AR face/arm indicators — each step validated through MediaPipe landmarks |
+| **Heart attack** | Conscious patient protocol: sit upright, loosen clothing, aspirin guidance, monitor until 112 arrives |
+| **Anaphylaxis** | Timed 6-phase EpiPen sequence with AR injection-site marker on the outer thigh |
+
+### Training platform
+
+Learn before the emergency — not during it:
+
+- **CPR module** — guided practice with live camera feedback on hand position, posture, and compression tempo
+- **Stroke FAST module** — step-by-step Face / Arms / Speech / Time assessment with camera-verified observations
+- **Allergy module** — timed EpiPen drill with AR placement reference
+- **Quiz engine** — adaptive question bank with skill-gap analysis
+- **Analytics dashboard** — per-skill error breakdown, retry history, focus recommendations
+
+---
 
 ## Architecture
 
 ```
-Camera (CameraX 720p)
+Camera (CameraX 720p, back lens)
     │
     ▼
-MediaPipeController        ← pose + hand landmarks, LIVE_STREAM mode
+MediaPipeController          ← Pose + Hand landmarks, LIVE_STREAM mode
     │
     ▼
-SanjeevaniEngine           ← per-frame coordinator
-    ├── EmergencyClassifier    ← visual triage (lying/hand-to-chest/arm-drift)
-    ├── EmergencyFSM           ← deterministic state machine, routes to module
-    ├── SpatialReasoner        ← CPR hand-placement guidance
-    ├── CompressionDetector    ← CPR rate via wrist Y-velocity peaks
-    ├── PatientDetector        ← lying-flat detection
-    ├── StrokeModule           ← FAST assessment
-    ├── AllergicReactionModule ← EpiPen timing sequence
-    └── HeartAttackModule      ← conscious patient protocol
+SanjeevaniEngine             ← per-frame coordinator
+    ├── EmergencyClassifier      ← visual triage (lying/hand-to-chest/arm-drift)
+    ├── EmergencyFSM             ← deterministic state machine, sole progression authority
+    ├── SpatialReasoner          ← CPR: sternum target + directional correction
+    ├── CompressionDetector      ← CPR: motion-cycle counting, rate from ≥4 events
+    ├── PatientDetector          ← lying-flat heuristic with visibility gates
+    ├── StrokeModule             ← FAST: Face Mesh + pose, 5-frame temporal validation
+    ├── AllergicReactionModule   ← timed sequence, hip/knee AR marker
+    └── HeartAttackModule        ← conscious patient protocol
     │
     ▼
 GuidanceState (StateFlow)
     │
-    ▼
-AROverlayView (Canvas2D) + TTS voice
+    ├── AROverlayView            ← Canvas2D skeleton, circles, arrows, compression pulse
+    └── TTS voice (Android TTS primary, Kokoro fallback)
 ```
+
+**Safety by design:**
+- Zero LLMs in the decision path — all clinical transitions are deterministic FSM
+- Stale callbacks and duplicate answers cannot advance state (versioned transitions)
+- Emergency call (112) is always one tap away; app never delays calling for help
+- Protocols follow AHA 2020 CPR guidelines and Resuscitation Council UK adult BLS
+
+---
 
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `model/Models.kt` | All data classes, enums, EmergencyModule interface |
-| `perception/MediaPipeController.kt` | MediaPipe Tasks API wrapper |
-| `engine/EmergencyClassifier.kt` | Visual triage — classifies emergency from pose |
-| `engine/EmergencyFSM.kt` | State machine — IDLE → TRIAGE → per-emergency protocol |
-| `engine/SanjeevaniEngine.kt` | Per-frame coordinator, dispatches to modules |
-| `engine/SpatialReasoner.kt` | CPR: sternum target + hand correction vector |
-| `engine/CompressionDetector.kt` | CPR: Hanning-filtered rate detection |
-| `engine/StrokeModule.kt` | FAST: face/arm/speech assessment |
-| `engine/AllergicReactionModule.kt` | Anaphylaxis: timed EpiPen protocol |
-| `engine/HeartAttackModule.kt` | Heart attack: sit/loosen/aspirin/monitor |
-| `ui/AROverlayView.kt` | Canvas2D AR overlay (skeleton, circles, arrows) |
-| `ui/EmergencySelectionScreen.kt` | Compose triage screen — 4 emergency cards |
-| `MainActivity.kt` | CameraX + Compose host, navigation |
-| `SanjeevaniViewModel.kt` | Bridges engine to UI, TTS voice |
+| [`engine/EmergencyFSM.kt`](app/src/main/java/com/sanjeevani/engine/EmergencyFSM.kt) | Sole progression authority; versioned, guarded transitions |
+| [`engine/SanjeevaniEngine.kt`](app/src/main/java/com/sanjeevani/engine/SanjeevaniEngine.kt) | Per-frame coordinator, perception freshness gates |
+| [`engine/CPRWorkflow.kt`](app/src/main/java/com/sanjeevani/engine/CPRWorkflow.kt) | Read-only state-to-step projection (no timers) |
+| [`engine/CompressionDetector.kt`](app/src/main/java/com/sanjeevani/engine/CompressionDetector.kt) | Motion-cycle counting; hysteresis + cooldown alerts |
+| [`engine/StrokeModule.kt`](app/src/main/java/com/sanjeevani/engine/StrokeModule.kt) | FAST: Face Mesh mouth corners + pose arm assessment |
+| [`engine/AllergicReactionModule.kt`](app/src/main/java/com/sanjeevani/engine/AllergicReactionModule.kt) | Timed EpiPen sequence, thigh AR reference |
+| [`voice/SessionDialogue.kt`](app/src/main/java/com/sanjeevani/voice/SessionDialogue.kt) | Conservative transcript interpretation, TurnGate |
+| [`ui/AROverlayView.kt`](app/src/main/java/com/sanjeevani/ui/AROverlayView.kt) | Canvas2D AR overlay mapped to FIT_CENTER preview |
+| [`SanjeevaniViewModel.kt`](app/src/main/java/com/sanjeevani/SanjeevaniViewModel.kt) | Serial state publication, TTS/recognition lifecycle |
+| [`MainActivity.kt`](app/src/main/java/com/sanjeevani/MainActivity.kt) | CameraX host, permissions, 112 dialer, navigation |
+
+---
 
 ## Build
 
 ```bash
-# Download MediaPipe models first (one-time, ~13MB total)
+# One-time: download MediaPipe models (~13 MB)
 ./download_models.sh
 
-# Build debug APK
-./gradlew assembleDebug
+# Optional: Kokoro neural TTS (~200 MB, fallback only)
+./setup_kokoro.sh
 
-# Install on connected device
-adb install app/build/outputs/apk/debug/app-debug.apk
+# Build & test
+./gradlew testDebugUnitTest assembleDebug lintDebug
+
+# Install on device
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Requires: Android SDK API 35, JDK 17, device with Android 8+ (API 26)
+**Requirements:** Android SDK API 35 · JDK 17 · Android 8.0+ (API 26)
 
-## Safety design
+---
 
-- **No LLM in the decision path** — all guidance is deterministic FSM + MediaPipe geometry
-- Medical protocols follow Indian Red Cross / AHA 2020 guidelines
-- Emergency call is always shown; app never delays calling 112
+## Testing
 
-## Branches
+36 unit tests, all passing:
 
-| Branch | Owner | Purpose |
-|--------|-------|---------|
-| `main` | — | Stable; CPR module complete and tested |
-| `feature/person-a-engine` | Person A (Claude) | Multi-emergency engine modules |
-| `feature/person-b-ui` | Person B (Codex) | Triage UI + overlay updates |
+| Suite | Tests |
+|-------|-------|
+| Workflow & dialogue | 16 |
+| Vision / overlay / engine integration | 10 |
+| Compression detector | 6 |
+| Voice lifecycle | 4 |
 
-## Assets
+```bash
+./gradlew testDebugUnitTest
+```
 
-MediaPipe models in `app/src/main/assets/` (not committed — run `download_models.sh`):
-- `pose_landmarker_lite.task` (5.5 MB)
-- `hand_landmarker.task` (7.5 MB)
+---
+
+## Limitations & honesty
+
+Sanjeevani is a prototype. It has not been clinically approved.
+
+- Camera cannot prove supine orientation, firm surface, or compression depth
+- Green overlays mean a *stable estimate*, not clinical validation
+- English phrase grammar only — not unrestricted conversational understanding
+- No process-death session persistence
+- Clinical approval and India-specific protocol review are outstanding
+- **Always follow emergency dispatchers and AED instructions first**
+
+---
+
+## Project structure
+
+```
+app/src/main/java/com/sanjeevani/
+├── engine/          Core FSM, modules, spatial reasoning, compression detection
+├── model/           Data classes, enums, source timestamps, FSM versioning
+├── perception/      MediaPipeController (pose + hand landmarks)
+├── training/        Skill stores, assessment engines, quiz, recommendation
+├── tts/             KokoroTTS synthesis + playback
+├── ui/              Compose screens, AR overlay, training and analytics UIs
+└── voice/           SessionDialogue, TurnGate, ContextAwareVoiceCompanion
+
+docs/                SESSION_VERIFICATION.md — full implementation report
+reports/             Stroke/allergy audit, training strategy
+research_notes/      Competitive landscape, curriculum, product strategy
+sanjeevani-presentations/   LaTeX pitch deck + system design
+```
+
+---
+
+## Emergency number
+
+**112** — India Emergency Response Support System (ERSS)
+
+---
+
+*Built at iQOO Hackathon 2026. Not a medical device. Not approved for clinical use.*
