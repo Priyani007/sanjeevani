@@ -1,156 +1,178 @@
-# Sanjeevani — Claude Code Context
+# Sanjeevani — Claude handoff
 
-This file is read automatically by Claude Code. It contains everything needed to work on this project without re-reading all source files every session.
+Updated 10 October 2026. Read this file before changing the app, then read
+[the implementation and verification report](docs/SESSION_VERIFICATION.md).
 
-## Project
+## Current task context
 
-Android AR emergency first-responder app. Kotlin + Jetpack Compose + CameraX + MediaPipe Tasks API. No external AI/LLM at runtime — all guidance is deterministic. Built for iQOO Hackathon 2026.
+The user requested an end-to-end repair of the emergency coach: one authoritative
+workflow, contextual voice turn-taking, evidence-based position/hand feedback,
+real motion-cycle estimates, and protection against stale callbacks and reopened
+completed steps. This has been implemented on `feature/person-b-ui`.
 
-Package: `com.sanjeevani` · compileSdk 35 · minSdk 26 · Kotlin 2.0.21 · AGP 8.7.0
+The old B1–B5 tasks in AGENTS.md describe an earlier project phase, not current
+implementation status. In particular, do not reintroduce timer-driven CPR,
+camera-derived consciousness, or automatic CPR on a reported heart attack.
+The latest end-to-end user brief explicitly required cross-layer engine/model/UI
+changes; older branch ownership notes alone do not describe that work.
 
-## What is already built and working
+## Stack and entry points
 
-The **CPR module is complete** (built in a prior session, APK verified):
-- MediaPipe pose + hand detection at 30fps via CameraX 720p
-- Patient detection (lying-flat pose formula from iOS source)
-- Sternum target calculation + hand-placement correction arrows (AR overlay)
-- Compression rate detection via Hanning-filtered wrist Y-velocity peaks
-- Deterministic FSM: IDLE → SCENE_ASSESSMENT → RESPONSIVENESS_CHECK → CPR path
-- Canvas2D AR overlay (skeleton, target circle, correction arrows)
-- Android TTS voice guidance with 2500ms throttle
+Android Kotlin 2.0.21, Jetpack Compose, CameraX, MediaPipe; package
+`com.sanjeevani`, minSdk 26, compileSdk 35, AGP 8.7.0.
 
-## What is NOT yet built (active tasks)
+- `MainActivity.kt`: preview, permission requests, lifecycle, answer controls,
+  112 dialer, dispatcher mute.
+- `SanjeevaniViewModel.kt`: serial state publication, TTS/recognition turn lifecycle,
+  token/version guards, dedicated single-thread vision executor.
+- `engine/EmergencyFSM.kt`: sole progression authority; guarded answers and
+  stable visual observations; completed history and versioned transition records.
+- `engine/SanjeevaniEngine.kt`: perception freshness, current-step validation,
+  derived overlay, speech priority, structured bounded session context.
+- `engine/CPRWorkflow.kt`: read-only state-to-step projection. It has no timers.
+- `voice/SessionDialogue.kt`: conservative English final-transcript interpretation,
+  contextual help and TurnGate. No runtime LLM decisions.
+- `model/Models.kt`: source timestamps, FSM version, explicit overlay state,
+  confirmation event and count reliability.
 
-See GitHub issues for current status. Summary:
-- `engine/EmergencyClassifier.kt` — visual triage from pose landmarks
-- `engine/StrokeModule.kt` — FAST assessment protocol  
-- `engine/AllergicReactionModule.kt` — anaphylaxis EpiPen sequence (port from iOS)
-- `engine/HeartAttackModule.kt` — conscious patient protocol (Person B)
-- `ui/EmergencySelectionScreen.kt` — 4-button triage Compose screen (Person B)
-- `EmergencyFSM.kt` update — add triage + routing (Person A)
-- `SanjeevaniEngine.kt` update — dispatch to modules (Person A)
-- `AROverlayView.kt` update — multi-emergency overlays (Person B)
-- `MainActivity.kt` update — navigation + PreviewView bug fix (Person B)
+## Workflow invariants
 
-## Branch ownership
+Opening/selection → responsiveness.
+Responsive → monitoring, NOT CPR.
+Unresponsive → normal-breathing assessment.
+Normal breathing → monitoring.
+Reported unresponsive + not breathing normally → positioning → hand placement
+→ explicit posture/readiness confirmation → active CPR coaching.
 
-- `feature/person-a-engine` — Person A's branch (engine files)
-- `feature/person-b-ui` — Person B's branch (UI files)
-- Never commit to both branches from the same session without coordinating
+Stable camera position estimates lead to POSITION_CONFIRMED, where the user must
+confirm actual back position/readiness. Manual positioning and hand-placement
+fallbacks are explicitly user evidence, not camera verification.
 
-## Interface contract (types both branches depend on)
+Only current-step validation advances the FSM. Missing tracking during active
+CPR never reopens positioning. Explicit changed-condition reports trigger a
+documented reassessment; explicit emergency-team takeover ends app guidance.
+Every transition records source, destination, timestamp, version and reason.
+Duplicate answers and stale callbacks cannot advance a newer state.
 
-Person A owns Models.kt. These types must be added there:
+## Voice and latency
 
-```kotlin
-// Expand EmergencyType to:
-enum class EmergencyType { CPR, FAST_STROKE, HEART_ATTACK, ALLERGIC_REACTION, UNKNOWN }
+Android TTS is primary for low startup latency (rate 1.05; full per-utterance gain,
+system volume respected). Kokoro is a fallback, with serialized synthesis and
+playback-head completion. Vision model loading does not block opening speech.
 
-// Add to FSMState: TRIAGE_DETECTION, STROKE_FAST_TEST, HEART_ATTACK_CONSCIOUS, ALLERGIC_PROTOCOL
+Question → successful speech completion → recognizer → final result →
+contextual interpretation → guarded transition → next instruction.
+No partial-transcript clinical decisions, arbitrary two-second auto-listen delay,
+or speech/listening overlap by design. Listen status comes from onReadyForSpeech.
+Silence/error leaves retry/tap controls. Recognition can depend on the installed
+service and network. Audio focus loss, app pause, interruption and dispatcher mute
+invalidate obsolete turns.
 
-enum class TriageState { OBSERVING, CAMERA_SUGGESTS, USER_CONFIRMED }
-enum class AllergicPhase { LAY_FLAT, RAISE_LEGS, SAFE_POSITION, EPIPEN_READY, EPIPEN_INJECT, MONITORING }
+The existing `llm/SanjeevaniLLM.kt` and GenAI dependency are retained for source
+compatibility (the UI uses LlmState), but the model is NOT initialized or called.
+Do not connect its free-form output to medical decisions or playback without a
+separate safety review. Legacy ContextAwareVoiceCompanion is also not the active
+session dialogue implementation.
 
-data class ClassifierSignal(
-    val emergencyType: EmergencyType,
-    val confidence: Float,
-    val visualSignals: List<String>,
-    val suggestedByCamera: Boolean
-)
-data class StrokeSignals(
-    val faceAsymmetryScore: Float, val armDriftDetected: Boolean,
-    val speechPrompted: Boolean, val positiveTestCount: Int
-)
-data class ModuleResult(val voiceText: String?, val overlay: AROverlaySpec, val isComplete: Boolean = false)
-interface EmergencyModule { fun process(frame: PerceptionFrame, nowMs: Long): ModuleResult; fun reset() }
+## Camera, estimates and visual feedback
 
-// Add to AROverlaySpec: emergencyType, phaseProgress, showEpiPenMarker, leftShoulderY, rightShoulderY
-// Add to GuidanceState: triageState, classifierSignal
-```
+Back camera only: bitmap is rotated upright before inference. OverlayCoordinates
+maps normalized upright landmarks to FIT_CENTER preview coordinates. Spoken
+directions mean SCREEN left/right/up/down, not anatomical directions.
 
-## Key algorithms — preserve exactly
+Source pose age ≤300 ms; hand age ≤250 ms; pose/hand separation ≤150 ms.
+Repeated source samples cannot accumulate evidence/counts. Multi-person pose
+results are treated as ambiguous. Vision work and GPU initialization use one thread.
 
-**Sternum target** (SpatialReasoner.kt):
-```kotlin
-sternumY = shoulderMidY + (hipMidY - shoulderMidY) * 0.35f
-```
+Position is a conservative heuristic with required visibility ≥0.65 and
+opposite-side arm evidence relative to the torso axis. MediaPipe world Y is not
+a ground/gravity sensor. Camera cannot prove supine orientation or firm surface.
+Green means a stable estimate, NOT clinical validation. Confirmation bounce
+is triggered once per event ID.
 
-**Lying-flat detection** (PatientDetector.kt — from iOS BodySkeleton.swift):
-```kotlin
-lying = shoulderSpanX > 0.12f && shoulderSpanX > shoulderSpanY / 0.7f
-// Original iOS: horizontalComponent > verticalComponent * 0.7
-```
+The chest marker interpolates 0.45 from shoulder midpoint toward hips; it is
+an approximate target. Single-hand visual tracking remains supported, but adult
+spoken instructions describe standard two-hand technique. Do not restore patient
+pose wrists as rescuer-hand fallback, or indefinitely cached missing targets.
 
-**Spatial hysteresis** (SpatialReasoner.kt):
-```kotlin
-CORRECTION_THRESHOLD = 0.04f
-HYSTERESIS = 0.01f
-MIN_ACTION_CHANGE_MS = 500L
-EMA alpha = 0.3f
-```
+## Compression coaching
 
-**Compression detection** (CompressionDetector.kt):
-```kotlin
-BUFFER_SIZE = 90  // 3s at 30fps
-MIN_EVENT_GAP_MS = 300L
-RATE_WINDOW_MS = 10000L
-Hanning window, peak prominence > 0.05f
-```
+The 110 BPM sphere is an independent pacing cue, configurable within 100–120.
+It does not count compressions or measure depth.
 
-## MediaPipe landmark indices
+CompressionDetector counts estimated torso-relative tracked-hand motion cycles
+only in active coaching near the target. Excursion, temporal separation,
+monotonic timestamps, stable hand identity and tracking-gap handling prevent
+simple duplicates/noise from fabricating progress. Rate requires at least four
+recent events and consistent intervals. Alerts have hysteresis and cooldown.
+Tracking loss invalidates rate/current cycle but preserves the cumulative estimate.
 
-Pose (33 landmarks):
-```
-NOSE=0  L_SHOULDER=11  R_SHOULDER=12
-L_ELBOW=13  R_ELBOW=14  L_WRIST=15  R_WRIST=16
-L_HIP=23  R_HIP=24  L_KNEE=25  R_KNEE=26
-```
+No claims of validated compression depth, pulse, perfusion, anatomical accuracy,
+or clinical efficacy. The old simulated-looking vitals panel is not displayed.
 
-Hands (21 landmarks per hand):
-```
-WRIST=0  THUMB_TIP=4  INDEX_MCP=5  MIDDLE_MCP=9  RING_MCP=13  PINKY_MCP=17
-```
+## Important functional limitations
 
-MediaPipe handedness flip: when MediaPipe says "Left" it means the camera-right hand (mirror flip). Already handled in MediaPipeController.kt.
+- Legacy autonomous stroke/allergy/heart-attack modules remain in source but
+  are not dispatched by the new coordinator. Concern cards lead to emergency
+  assessment/dispatcher guidance; specialty protocols need review before restoring.
+- English phrase grammar, not unrestricted conversational understanding.
+- No process-death session persistence; ViewModel handles Activity recreation.
+- Camera alignment, posture acceptance and count accuracy need controlled real
+  device/manikin validation. Tests use synthetic signals, not clinical data.
+- Clinical approval and India-specific protocol review are still outstanding.
+- This is an adult guidance prototype. Follow emergency dispatchers/AEDs first.
 
-Landmarks are NormalizedLandmark(x, y, z, visibility) in 0..1 screen coordinates.
+## Verification and device handoff
 
-## iOS source available for porting
+Last code verification:
+`./gradlew testDebugUnitTest assembleDebug lintDebug` — BUILD SUCCESSFUL.
+36 tests passed: workflow/dialogue 16, compression detector 6,
+vision/overlay/engine integration 10, voice lifecycle 4.
+Lint succeeds with warnings. `git diff --check` passes.
 
-`/Users/naman/Downloads/iqoo final/Halo/Halo-HackHarvard/SafeStepAR/`
+Subsequently installed the debug APK on the user's I2501 phone
+(serial `10BFC41SG2001UZ`) using `adb install -r`; result Success.
+Launched `com.sanjeevani/.MainActivity`; result Status: ok, cold launch 343 ms.
+The app process was present afterward. A short filtered AndroidRuntime log read
+returned no error output. This is installation/launch smoke verification ONLY.
+Do not claim the live microphone, speaker, camera geometry, or counting has been
+verified end-to-end on the phone. The manual checklist is in the report.
 
-Key files:
-- `AllergicReactionView.swift` — exact timing sequence for AllergicReactionModule
-- `BodySkeleton.swift` — posture detection (already ported to PatientDetector.kt)
-
-**Security note**: iOS `Config.swift` contains an ElevenLabs API key. Do NOT use it. User must revoke it.
-
-## Build commands
+## Commands and local assets
 
 ```bash
-# From project root:
-./gradlew assembleDebug            # build APK
-./gradlew assembleDebug --info     # verbose
-adb install app/build/outputs/apk/debug/app-debug.apk
+./gradlew testDebugUnitTest assembleDebug lintDebug
+/Users/naman/Library/Android/sdk/platform-tools/adb devices -l
+/Users/naman/Library/Android/sdk/platform-tools/adb -s 10BFC41SG2001UZ install -r app/build/outputs/apk/debug/app-debug.apk
+/Users/naman/Library/Android/sdk/platform-tools/adb -s 10BFC41SG2001UZ shell am start -W -n com.sanjeevani/.MainActivity
 ```
 
-SDK path is `/Users/naman/Library/Android/sdk` (set in local.properties — not committed).
+Debug APK is about 577 MB due to local assets. MediaPipe and Kokoro model files
+are not committed. Use existing `download_models.sh` / `setup_kokoro.sh` when
+setting up a fresh machine; no downloads are needed for this workspace.
+SDK location is in untracked local.properties.
 
-## Safety rules
+Existing untracked `download_llm.sh` and `sanjeevani_system_design.png/.tex`
+were left outside this handoff commit. The LLM script's claim that the app loads
+a model on startup is outdated; do not run it as part of this workflow.
 
-1. **No LLM calls in the decision path** — all guidance must be deterministic FSM + MediaPipe geometry
-2. Never hardcode the ElevenLabs key from Config.swift
-3. MediaPipe models are in assets/ — not committed to git (too large). Run `./download_models.sh`
-4. All emergency protocols follow Indian Red Cross / AHA 2020 guidelines
-5. Emergency number is 112 (India), not 911
+## Safety and source references
 
-## Known bugs to fix
+Emergency number: 112 (India). Speak numbers clearly as words.
+Clinical transitions must remain deterministic and testable.
+Never infer responsiveness/breathing from pose alone, or gate urgent assistance
+on getting camera tracking to work. Never claim the implementation is approved.
 
-- `MainActivity.kt`: `preview.setSurfaceProvider(previewView.surfaceProvider)` is not called — camera shows black screen. Person B fixes this.
-- `SanjeevaniViewModel.kt`: `initialize()` is called in `init{}` before camera permission — should use `ensureInitialized()` pattern. Person B fixes this.
+The report links the 2025 Resuscitation Council UK adult BLS guidance and India
+ERSS 112 used during review. Those references do not validate this app.
+Older claims here about a completed/verified CPR module and frozen Hanning
+algorithm constants were inaccurate for the current implementation.
 
-## Voice guidance rules
+Landmarks: nose 0; shoulders 11/12; elbows 13/14; wrists 15/16; hips 23/24;
+knees 25/26. Hand palm MCP points: 5/9/13/17. Normalized image coordinates
+are distinct from world coordinates and handedness labels.
 
-- Android TTS, voice throttle 2500ms for CPR, 5000ms for Allergic/HeartAttack
-- Numbers spoken as words: "1 1 2" not "112", "100 to 120" not "100-120"
-- Hindi/Hinglish not required for MVP but welcome in V2
+Historical iOS reference:
+`/Users/naman/Downloads/iqoo final/Halo/Halo-HackHarvard/SafeStepAR/`.
+Its Config.swift contains an exposed ElevenLabs key. Do not read/use/copy that
+secret; owner should revoke it. No secret is needed for this implementation.
