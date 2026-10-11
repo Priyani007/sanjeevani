@@ -19,7 +19,7 @@ private const val MIDDLE_FINGER_MCP = 9
 private const val RING_FINGER_MCP = 13
 private const val PINKY_MCP = 17
 
-private const val STERNUM_TORSO_RATIO = 0.35f   // Approximate screen-space chest target; not clinical validation
+private const val STERNUM_TORSO_RATIO = 0.45f   // Approximate screen-space chest target; not clinical validation
 private const val CORRECTION_THRESHOLD = 0.09f  // Wider zone — tolerates camera wobble during compressions
 private const val HYSTERESIS = 0.03f            // Larger dead-band so CORRECT state is sticky
 private const val MIN_ACTION_CHANGE_MS = 800L   // Longer hold before issuing a new direction

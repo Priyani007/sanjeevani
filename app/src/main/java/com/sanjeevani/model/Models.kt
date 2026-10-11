@@ -113,7 +113,9 @@ data class StrokeSignals(
     val faceAsymmetryScore: Float,
     val armDriftDetected: Boolean,
     val speechPrompted: Boolean,
-    val positiveTestCount: Int
+    val positiveTestCount: Int,
+    val faceObservationFrames: Int = 0,
+    val armObservationFrames: Int = 0
 )
 
 // ─── Emergency module contract ───────────────────────────────────────────────
@@ -172,6 +174,35 @@ data class AROverlaySpec(
     val imageWidth: Int = 1,
     val imageHeight: Int = 1,
     val countReliable: Boolean = false
+)
+
+// ─── CPR session report ──────────────────────────────────────────────────────
+
+data class CprSessionReport(
+    val compressionCount: Int,          // camera-detected compressions (0 if tracking unavailable)
+    val elapsedSeconds: Int,
+    val bpmAtEnd: Int,
+    val mistakes: List<String>,         // human-readable issues from all steps
+    val handFaultsByDirection: Map<String, Int> = emptyMap(),  // "Too far right/left/up/down" → count
+    val totalHandFaults: Int = 0,
+    val postureCheckCompleted: Boolean = false,
+    val positionConfirmed: Boolean = false,
+    val trackingAvailablePct: Int = 0,  // % of COMPRESSION_ACTIVE frames with reliable detection
+    val rateOnTargetPct: Int = 0,       // % of reliable frames at 100–120 BPM
+    val rateTooSlowPct: Int = 0,
+    val rateTooFastPct: Int = 0
+)
+
+// ─── Training snapshot ───────────────────────────────────────────────────────
+
+data class TrainingSessionSnapshot(
+    val completedFSMStates: Set<FSMState>,
+    val compressionCount: Int,
+    val rateStatus: RateStatus,
+    val strokeSignals: StrokeSignals,
+    val strokeIsComplete: Boolean,
+    val allergicPhaseOrdinal: Int,
+    val emergencyType: EmergencyType
 )
 
 data class GuidanceState(

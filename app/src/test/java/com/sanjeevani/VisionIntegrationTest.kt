@@ -113,7 +113,7 @@ class VisionIntegrationTest {
         e.answer(Answer.READY)
         val started=e.snapshot()
         assertEquals(FSMState.COMPRESSION_ACTIVE,started.fsmState)
-        assertNotNull(started.voiceText)
+        // No entry speech — count starts after 500 ms delay; first snapshot returns null voice
         assertNull(e.snapshot().voiceText)
         repeat(40) {
             val t=tick()
@@ -142,39 +142,28 @@ class VisionIntegrationTest {
         repeat(12) { e.process(PerceptionFrame(tick(), pose(), hand(.5f, .425f), null, 720, 1280)) }
         e.answer(Answer.READY); e.snapshot()
     }
-    @Test fun responseCheckYesAnswerTriggersReassessment() {
+    @Test fun responseCheckYesAnswerContinuesCompressions() {
         val e = SanjeevaniEngine()
         reachCompressionActive(e)
         assertEquals(FSMState.COMPRESSION_ACTIVE, e.getFSMState())
-        val sternumY = .425f; val amp = .04f
-        var foundCheck = false
-        for (i in 0..2000) {
-            val t = tick(10)
-            val cy = sternumY + amp * sin(2.0 * PI * 110.0 * t / 60000.0).toFloat()
-            val g = e.process(PerceptionFrame(t, pose(), hand(.5f, cy), null, 720, 1280))
-            if (g.voiceText?.contains("signs of life") == true) { foundCheck = true; break }
-        }
-        assertTrue("Expected periodic response check after 30+ compressions", foundCheck)
-        assertEquals(FSMState.COMPRESSION_ACTIVE, e.getFSMState())
+        // Simulate the ViewModel counting coroutine triggering the consciousness check
+        e.markConsciousnessCheckPending()
+        assertTrue("Consciousness check should be pending", e.isPendingConsciousnessCheck)
         e.answer(Answer.YES)
-        assertEquals(FSMState.RESPONSIVENESS_CHECK, e.getFSMState())
+        // YES keeps CPR going — encouragement voice is handled by ViewModel counting coroutine
+        assertEquals(FSMState.COMPRESSION_ACTIVE, e.getFSMState())
+        assertFalse("Consciousness check should be cleared after YES", e.isPendingConsciousnessCheck)
     }
     @Test fun responseCheckNoAnswerContinuesCompressions() {
         val e = SanjeevaniEngine()
         reachCompressionActive(e)
         assertEquals(FSMState.COMPRESSION_ACTIVE, e.getFSMState())
-        val sternumY = .425f; val amp = .04f
-        var foundCheck = false
-        for (i in 0..2000) {
-            val t = tick(10)
-            val cy = sternumY + amp * sin(2.0 * PI * 110.0 * t / 60000.0).toFloat()
-            val g = e.process(PerceptionFrame(t, pose(), hand(.5f, cy), null, 720, 1280))
-            if (g.voiceText?.contains("signs of life") == true) { foundCheck = true; break }
-        }
-        assertTrue("Expected periodic response check after 30+ compressions", foundCheck)
+        // Simulate the ViewModel counting coroutine triggering the consciousness check
+        e.markConsciousnessCheckPending()
+        assertTrue("Consciousness check should be pending", e.isPendingConsciousnessCheck)
         e.answer(Answer.NO)
+        // NO keeps CPR going — encouragement voice is handled by ViewModel counting coroutine
         assertEquals(FSMState.COMPRESSION_ACTIVE, e.getFSMState())
-        val s = e.snapshot()
-        assertTrue("Expected continuation voice after NO answer", s.voiceText?.contains("No signs") == true)
+        assertFalse("Consciousness check should be cleared after NO", e.isPendingConsciousnessCheck)
     }
 }

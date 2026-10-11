@@ -144,24 +144,23 @@ class WorkflowTest {
         assertTrue(f.history.last().reason.contains("anaphylaxis", ignoreCase = true))
     }
 
-    @Test fun allergicModuleAdvancesThroughPhases() {
+    @Test fun allergicModuleRequiresExplicitLearnerStepSelection() {
         val module = AllergicReactionModule()
-        // t=0: LAY_FLAT
         val t0 = module.process(emptyFrame(0), 0)
         assertNotNull("Phase 0 should speak on first call", t0.voiceText)
         assertTrue(t0.voiceText!!.contains("flat", ignoreCase = true))
         assertFalse(t0.isComplete)
-        // t=17001: RAISE_LEGS
-        val t17 = module.process(emptyFrame(17001), 17001)
-        assertNotNull("Phase 1 should speak on transition", t17.voiceText)
-        assertTrue(t17.voiceText!!.contains("leg", ignoreCase = true))
-        // t=48001: EPIPEN_READY
-        val t48 = module.process(emptyFrame(48001), 48001)
-        assertNotNull("Phase 3 should speak on transition", t48.voiceText)
-        assertTrue(t48.voiceText!!.contains("EpiPen", ignoreCase = true))
-        // t=91000: session complete after 90 s
-        val t91 = module.process(emptyFrame(91000), 91000)
-        assertTrue(t91.isComplete)
+        val noTimerAdvance = module.process(emptyFrame(90_000), 90_000)
+        assertNull("Elapsed time must not change the phase", noTimerAdvance.voiceText)
+        assertFalse(noTimerAdvance.isComplete)
+        module.selectTrainingStep(2)
+        val legs = module.process(emptyFrame(90_001), 90_001)
+        assertTrue(legs.voiceText!!.contains("leg", ignoreCase = true))
+        module.selectTrainingStep(3)
+        val trainer = module.process(emptyFrame(90_002), 90_002)
+        assertTrue(trainer.voiceText!!.contains("trainer", ignoreCase = true))
+        module.selectTrainingStep(6)
+        assertTrue(module.process(emptyFrame(90_003), 90_003).isComplete)
     }
 
     @Test fun allergicModuleEpiPenMarkerOnThighNotSternum() {
@@ -209,22 +208,22 @@ class WorkflowTest {
         assertNotNull("INTRO should speak", r0.voiceText)
         assertTrue(r0.voiceText!!.contains("FAST", ignoreCase = true))
         assertFalse(r0.isComplete)
-        // FACE at t=3001 (after INTRO 3s)
+        module.selectTrainingStep(1)
         val r3 = module.process(emptyFrame(3001), 3001)
         assertNotNull("FACE step should speak on transition", r3.voiceText)
         assertTrue(r3.voiceText!!.contains("smile", ignoreCase = true))
-        // ARM at t=13002 (after FACE 10s)
+        module.selectTrainingStep(2)
         val r13 = module.process(emptyFrame(13002), 13002)
         assertNotNull("ARM step should speak on transition", r13.voiceText)
         assertTrue(r13.voiceText!!.contains("arm", ignoreCase = true))
-        // SPEECH at t=25003 (after ARM 12s)
+        module.selectTrainingStep(3)
         val r25 = module.process(emptyFrame(25003), 25003)
         assertNotNull("SPEECH step should speak on transition", r25.voiceText)
         assertTrue(r25.voiceText!!.contains("phrase", ignoreCase = true))
         assertFalse("Not complete until speech result received", r25.isComplete)
-        // Simulate speech result — advances to RESULT
-        // positive=true means speech IS impaired (slurred); false means clear
         module.onSpeechResult(true)   // slurred speech = positive FAST finding
+        assertFalse("Speech input alone must not auto-complete training", module.process(emptyFrame(25050), 25050).isComplete)
+        module.completeTraining()
         val rResult = module.process(emptyFrame(25100), 25100)
         assertTrue("Module should be complete after RESULT", rResult.isComplete)
         assertNotNull("RESULT should announce findings", rResult.voiceText)
@@ -232,18 +231,7 @@ class WorkflowTest {
 
     @Test fun strokeModuleZeroPositivesLowRisk() {
         val module = com.sanjeevani.engine.StrokeModule()
-        // Run through all steps without triggering any positive signs
-        module.process(emptyFrame(0), 0)
-        module.process(emptyFrame(3001), 3001)   // FACE
-        module.process(emptyFrame(13002), 13002)  // ARM
-        module.process(emptyFrame(25003), 25003)  // SPEECH
-        module.onSpeechResult(false)  // speech positive = slurred; but we want 0 positives
-        // Speech slurred = positive, so we need speech clear instead for zero-positive test
-        // Reset and re-run with clear speech
-        module.reset()
-        module.process(emptyFrame(0), 0)
-        module.process(emptyFrame(3001), 3001)
-        module.process(emptyFrame(13002), 13002)
+        module.selectTrainingStep(3)
         module.process(emptyFrame(25003), 25003)
         module.onSpeechResult(false)  // false = speech clear = NOT a positive FAST finding
         val signals = module.getStrokeSignals()
@@ -265,18 +253,14 @@ class WorkflowTest {
     @Test fun strokeSpeechSlurredIsPositiveFindings() {
         // onSpeechResult(true) = slurred = positive FAST finding; (false) = clear = not positive
         val slurred = com.sanjeevani.engine.StrokeModule()
-        slurred.process(emptyFrame(0), 0)
-        slurred.process(emptyFrame(3001), 3001)   // FACE
-        slurred.process(emptyFrame(13002), 13002) // ARM
+        slurred.selectTrainingStep(3)
         slurred.process(emptyFrame(25003), 25003) // SPEECH
         slurred.onSpeechResult(true)              // slurred = positive finding
         assertTrue("Slurred speech must register as a positive FAST sign",
             slurred.getStrokeSignals().positiveTestCount >= 1)
 
         val clear = com.sanjeevani.engine.StrokeModule()
-        clear.process(emptyFrame(0), 0)
-        clear.process(emptyFrame(3001), 3001)
-        clear.process(emptyFrame(13002), 13002)
+        clear.selectTrainingStep(3)
         clear.process(emptyFrame(25003), 25003)
         clear.onSpeechResult(false)               // clear speech = NOT a positive finding
         assertEquals("Clear speech must NOT be counted as a positive FAST sign",

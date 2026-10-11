@@ -21,6 +21,7 @@ import androidx.lifecycle.viewModelScope
 import com.sanjeevani.engine.*
 import com.sanjeevani.model.*
 import com.sanjeevani.perception.MediaPipeController
+import com.sanjeevani.training.*
 import com.sanjeevani.tts.*
 import com.sanjeevani.llm.LlmState
 import com.sanjeevani.voice.SessionDialogue
@@ -28,6 +29,7 @@ import com.sanjeevani.voice.TurnGate
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
 
@@ -36,6 +38,20 @@ class SanjeevaniViewModel : ViewModel() {
     private val handler = Handler(Looper.getMainLooper())
     private val gate = TurnGate()
     private var context: Context? = null
+
+    // Training Intelligence Layer
+    private var trainingStore: TrainingStore = InMemoryTrainingStore()
+    private var activeSessionId: String? = null
+    private var activeModuleType: TrainingModuleType? = null
+    private var sessionStartMs: Long = 0L
+    private val _latestOutcome = MutableStateFlow<SessionOutcome?>(null)
+    val latestOutcome: StateFlow<SessionOutcome?> = _latestOutcome
+    private val _learnerProfile = MutableStateFlow(LearnerProfile())
+    val learnerProfile: StateFlow<LearnerProfile> = _learnerProfile
+    private val _topRecommendations = MutableStateFlow<List<PracticeRecommendation>>(emptyList())
+    val topRecommendations: StateFlow<List<PracticeRecommendation>> = _topRecommendations
+    private val _isDemoDataLoaded = MutableStateFlow(false)
+    val isDemoDataLoaded: StateFlow<Boolean> = _isDemoDataLoaded
     @Volatile private var mediaPipe: MediaPipeController? = null
     private val visionExecutor = Executors.newSingleThreadExecutor()
     private val visionDispatcher = visionExecutor.asCoroutineDispatcher()
@@ -58,6 +74,12 @@ class SanjeevaniViewModel : ViewModel() {
     private var lastGuidanceSpeech = -10000L
     private val _guidanceState = MutableStateFlow(GuidanceState())
     val guidanceState: StateFlow<GuidanceState> = _guidanceState
+    private val _cprSessionReport = MutableStateFlow<com.sanjeevani.model.CprSessionReport?>(null)
+    val cprSessionReport: StateFlow<com.sanjeevani.model.CprSessionReport?> = _cprSessionReport
+    private val _consciousnessCheckPending = MutableStateFlow(false)
+    val consciousnessCheckPending: StateFlow<Boolean> = _consciousnessCheckPending
+    private var cprCountingJob: Job? = null
+    private var consciousnessDeferred: CompletableDeferred<Unit>? = null
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
     private val _isSpeaking = MutableStateFlow(false)
@@ -73,6 +95,8 @@ class SanjeevaniViewModel : ViewModel() {
     fun ensureInitialized(ctx: Context) {
         if (initialized) return
         initialized = true; context = ctx.applicationContext
+        trainingStore = SharedPreferencesTrainingStore(ctx.applicationContext)
+        refreshProfileAndRecommendations()
         audio = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         // GPU delegate creation and detectAsync must use the same dedicated thread.
         // Voice/UI startup does not wait for the vision models.
@@ -115,11 +139,25 @@ class SanjeevaniViewModel : ViewModel() {
     }
     private fun publish(g: GuidanceState, forcePrompt: Boolean = false) {
         val changed = g.stateVersion != _guidanceState.value.stateVersion
+        if (changed && g.fsmState == FSMState.CPR_SUCCESS) {
+            _cprSessionReport.value = engine.buildSessionReport()
+        }
+        _consciousnessCheckPending.value = engine.isPendingConsciousnessCheck
         _guidanceState.value = g
-        if (changed) cancelTurn()
+        if (changed) {
+            cancelTurn()
+            cprCountingJob?.cancel(); cprCountingJob = null
+            consciousnessDeferred?.cancel(); consciousnessDeferred = null
+        }
+        if (changed && g.fsmState == FSMState.COMPRESSION_ACTIVE) {
+            startCprCounting()
+        }
         if (suspended || muted) return
         val instruction = if (forcePrompt || changed) engine.instruction() else g.voiceText
-        if (instruction != null && (changed || forcePrompt || (!turnActive && SystemClock.elapsedRealtime()-lastGuidanceSpeech >= 4000))) {
+        // Skip entry speech for COMPRESSION_ACTIVE — counting coroutine handles all voice in that state
+        val enteringCpr = changed && g.fsmState == FSMState.COMPRESSION_ACTIVE
+        if (instruction != null && !enteringCpr &&
+            (changed || forcePrompt || (!turnActive && SystemClock.elapsedRealtime()-lastGuidanceSpeech >= 4000))) {
             speak(instruction, engine.expectsAnswer())
         } else if (!turnActive) _voiceStatus.value = waitingStatus()
     }
@@ -258,7 +296,11 @@ class SanjeevaniViewModel : ViewModel() {
         val parsed = SessionDialogue.interpret(text, engine.getFSMState(), confidence)
         engine.recordUtterance(text, confidence, parsed.answer, parsed.concern)
         if (parsed.concern != null) { onEmergencySelected(parsed.concern); return }
-        if (engine.answer(parsed.answer, version)) { publish(engine.snapshot()); return }
+        val wasConsCheck = engine.isPendingConsciousnessCheck
+        if (engine.answer(parsed.answer, version)) {
+            if (wasConsCheck) { _consciousnessCheckPending.value = false; consciousnessDeferred?.complete(Unit) }
+            publish(engine.snapshot()); return
+        }
         val response = when (parsed.answer) {
             Answer.REPEAT -> engine.instruction()
             Answer.QUESTION -> SessionDialogue.help(text, engine.getFSMState(), engine.instruction())
@@ -272,14 +314,86 @@ class SanjeevaniViewModel : ViewModel() {
     }
     fun answer(answer: Answer, expectedVersion: Long = _guidanceState.value.stateVersion) {
         cancelTurn()
-        if (engine.answer(answer, expectedVersion)) publish(engine.snapshot())
+        val wasConsCheck = engine.isPendingConsciousnessCheck
+        if (engine.answer(answer, expectedVersion)) {
+            if (wasConsCheck) { _consciousnessCheckPending.value = false; consciousnessDeferred?.complete(Unit) }
+            publish(engine.snapshot())
+        }
     }
+    fun startTrainingSession(module: TrainingModuleType) {
+        if (activeSessionId != null) return  // already tracking
+        activeModuleType = module
+        activeSessionId = UUID.randomUUID().toString()
+        sessionStartMs = System.currentTimeMillis()
+        // Clear stale outcome so a discarded (<3s) session cannot navigate to the
+        // previous session's result screen.
+        _latestOutcome.value = null
+    }
+
     fun onEmergencySelected(type: EmergencyType) {
-        cancelTurn(); engine.setUserSelectedEmergency(type); publish(engine.snapshot())
+        cancelTurn()
+        engine.setUserSelectedEmergency(type)
+        publish(engine.snapshot())
+        // Stroke/Allergy assessment events are persisted per step by
+        // ModuleTrainingViewModel. Do not also create the older timer/summary session.
+        if (type == EmergencyType.FAST_STROKE || type == EmergencyType.ALLERGIC_REACTION) {
+            _latestOutcome.value = null
+        }
     }
+
+    fun selectCameraTrainingStep(type: EmergencyType, stepIndex: Int) {
+        engine.selectCameraTrainingStep(type, stepIndex)
+        publish(engine.snapshot())
+    }
+
+    fun completeCameraTraining(type: EmergencyType) {
+        engine.completeCameraTraining(type)
+        publish(engine.snapshot())
+    }
+
+    fun cameraTrainingSnapshot(): com.sanjeevani.model.TrainingSessionSnapshot =
+        engine.getTrainingSessionSnapshot()
+
+    fun endCPRSession() {
+        cprCountingJob?.cancel(); cprCountingJob = null
+        consciousnessDeferred?.cancel(); consciousnessDeferred = null
+        cancelTurn()
+        _cprSessionReport.value = engine.buildSessionReport()
+    }
+
+    fun dismissCPRReport() {
+        _cprSessionReport.value = null
+    }
+
     fun resetForNewEmergency() {
-        cancelTurn(); engine.resetForNewEmergency(); _guidanceState.value = GuidanceState()
+        // Save training session before resetting
+        saveTrainingSession()
+        cprCountingJob?.cancel(); cprCountingJob = null
+        consciousnessDeferred?.cancel(); consciousnessDeferred = null
+        cancelTurn(); engine.resetForNewEmergency(); _guidanceState.value = GuidanceState(); _cprSessionReport.value = null; _consciousnessCheckPending.value = false
     }
+    // Fast-skip to HAND_POSITIONING so the focused hand-placement drill starts
+    // at exactly the right step without the user having to answer prompts.
+    fun startHandPlacementDrill() {
+        resetForNewEmergency()
+        engine.setUserSelectedEmergency(EmergencyType.CPR)
+        // NO (responsiveness) → BREATHING_ASSESSMENT
+        engine.answer(Answer.NO, engine.stateVersion)
+        // NO (breathing) → CPR_POSITIONING
+        engine.answer(Answer.NO, engine.stateVersion)
+        // READY → HAND_POSITIONING (skips POSITION_CONFIRMED camera check)
+        engine.answer(Answer.READY, engine.stateVersion)
+        publish(engine.snapshot())
+    }
+
+    fun startThighPlacementDrill() {
+        resetForNewEmergency()
+        engine.setUserSelectedEmergency(EmergencyType.ALLERGIC_REACTION)
+        // Jump straight to EPIPEN_READY (thigh targeting step)
+        engine.selectCameraTrainingStep(EmergencyType.ALLERGIC_REACTION, 3)
+        publish(engine.snapshot())
+    }
+
     fun confirmNoResponse() = answer(Answer.NO)
     fun onStrokeSpeechResult(positive: Boolean) { engine.onStrokeSpeechResult(positive) }
     fun onResponsivenessCheckEntered() { /* Entry speech belongs to engine version, never UI recomposition. */ }
@@ -318,8 +432,113 @@ class SanjeevaniViewModel : ViewModel() {
             } finally { pendingFrame.set(false) }
         }
     }
+    private fun saveTrainingSession() {
+        val sessionId = activeSessionId ?: return
+        val module = activeModuleType ?: return
+        val endMs = System.currentTimeMillis()
+        if (endMs - sessionStartMs < 3_000L) {
+            // Session was too short (e.g. immediate back press) — discard
+            activeSessionId = null; activeModuleType = null; return
+        }
+        val snapshot = engine.getTrainingSessionSnapshot()
+        val criteria = when (module) {
+            TrainingModuleType.CPR -> AssessmentEngine.assessCPR(
+                snapshot.completedFSMStates, snapshot.compressionCount, snapshot.rateStatus, endMs
+            )
+            TrainingModuleType.STROKE_FAST -> AssessmentEngine.assessStroke(
+                snapshot.strokeSignals, snapshot.strokeIsComplete, endMs
+            )
+            TrainingModuleType.ALLERGIC_REACTION -> AssessmentEngine.assessAllergicReaction(
+                snapshot.allergicPhaseOrdinal, endMs
+            )
+        }
+        val previous = trainingStore.loadSessions(module).maxByOrNull { it.endMs }
+        val outcome = SessionOutcome(sessionId, module, sessionStartMs, endMs, criteria)
+        trainingStore.saveSession(outcome)
+        _latestOutcome.value = outcome
+        activeSessionId = null; activeModuleType = null
+        refreshProfileAndRecommendations()
+        // Expose before/after comparison in the outcome notes field (informational)
+        val comparison = AssessmentEngine.compare(previous, outcome)
+        if (comparison.hasImprovement) {
+            android.util.Log.d("SanjeevaniTraining", "Improved: ${comparison.newlyPassed.size} new criteria passed")
+        }
+    }
+
+    private fun refreshProfileAndRecommendations() {
+        val profile = RecommendationEngine.buildProfile(trainingStore)
+        _learnerProfile.value = profile
+        _topRecommendations.value = RecommendationEngine.recommend(profile)
+    }
+
+    fun getOutcomeComparison(outcome: SessionOutcome): OutcomeComparison {
+        val previous = trainingStore.loadSessions(outcome.moduleType)
+            .filter { it.sessionId != outcome.sessionId }
+            .maxByOrNull { it.endMs }
+        return AssessmentEngine.compare(previous, outcome)
+    }
+
+    fun loadDemoData() {
+        trainingStore.clearAllSessions()
+        DemoDataProvider.generateSessions().forEach { trainingStore.saveSession(it) }
+        _isDemoDataLoaded.value = true
+        refreshProfileAndRecommendations()
+    }
+
+    fun clearAllSessions() {
+        trainingStore.clearAllSessions()
+        _isDemoDataLoaded.value = false
+        refreshProfileAndRecommendations()
+    }
+
+    fun loadSessionHistory(module: TrainingModuleType): List<SessionOutcome> =
+        trainingStore.loadSessions(module).sortedByDescending { it.endMs }
+
+    private fun startCprCounting() {
+        cprCountingJob?.cancel()
+        consciousnessDeferred?.cancel(); consciousnessDeferred = null
+        cprCountingJob = viewModelScope.launch(Dispatchers.Main) {
+            delay(500L)
+            if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) return@launch
+            speak("One! Two! Three! Four! Five!", false)
+            delay(4000L)
+            if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) return@launch
+            speak("Too slow! Go faster!", false)
+            delay(4000L)
+            if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) return@launch
+            speak("Six! Seven! Eight! Nine! Ten!", false)
+            delay(4000L)
+            if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) return@launch
+            speak("Eleven! Twelve! Thirteen! Fourteen! Fifteen!", false)
+            delay(4000L)
+            if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) return@launch
+            // Consciousness check — suspend until answered
+            engine.markConsciousnessCheckPending()
+            val deferred = CompletableDeferred<Unit>()
+            consciousnessDeferred = deferred
+            _consciousnessCheckPending.value = true
+            speak("Is the person conscious? Yes or no?", false)
+            try { deferred.await() } catch (_: CancellationException) { return@launch }
+            if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) return@launch
+            speak("Don't stop! You're saving their life!", false)
+            delay(4000L)
+            // Loop 16-30 indefinitely
+            while (isActive && engine.getFSMState() == FSMState.COMPRESSION_ACTIVE) {
+                speak("Sixteen! Seventeen! Eighteen! Nineteen! Twenty!", false)
+                delay(4000L)
+                if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) break
+                speak("Twenty-one! Twenty-two! Twenty-three! Twenty-four! Twenty-five!", false)
+                delay(4000L)
+                if (!isActive || engine.getFSMState() != FSMState.COMPRESSION_ACTIVE) break
+                speak("Twenty-six! Twenty-seven! Twenty-eight! Twenty-nine! Thirty!", false)
+                delay(4000L)
+            }
+        }
+    }
+
     override fun onCleared() {
         cleared = true
+        cprCountingJob?.cancel()
         cancelTurn(); tts?.shutdown(); kokoro?.shutdown()
         visionExecutor.execute { mediaPipe?.close(); mediaPipe = null }
         visionExecutor.shutdown()

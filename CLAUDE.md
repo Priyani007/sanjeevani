@@ -90,7 +90,7 @@ a ground/gravity sensor. Camera cannot prove supine orientation or firm surface.
 Green means a stable estimate, NOT clinical validation. Confirmation bounce
 is triggered once per event ID.
 
-The chest marker interpolates 0.35 from shoulder midpoint toward hips; it is
+The chest marker interpolates 0.45 from shoulder midpoint toward hips; it is
 an approximate target. Single-hand visual tracking remains supported, but adult
 spoken instructions describe standard two-hand technique. Do not restore patient
 pose wrists as rescuer-hand fallback, or indefinitely cached missing targets.

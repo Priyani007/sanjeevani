@@ -1,12 +1,17 @@
 package com.sanjeevani.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -15,49 +20,65 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val SEQ_BG    = Color(0xEE080E1C)
-private val SEQ_TEAL  = Color(0xFF00C4B4)
-private val SEQ_AMBER = Color(0xFFFBBF24)
-private val SEQ_GREEN = Color(0xFF4ADE80)
-private val SEQ_RED   = Color(0xFFE53935)
-private val SEQ_LABEL = Color(0xFF5A6580)
-private val SEQ_WHITE = Color.White
-private val SEQ_TEXT  = Color(0xFFCBD5E1)
-private val SEQ_BORDER = Color(0xFF1E3A5F)
+// ── Apple-inspired light palette ─────────────────────────────────────────────
+private val BG          = Color(0xFFF2F2F7)   // iOS system grouped background
+private val CARD        = Color(0xFFFFFFFF)
+private val ACCENT      = Color(0xFF007AFF)   // iOS blue
+private val GREEN       = Color(0xFF34C759)   // iOS green
+private val ORANGE      = Color(0xFFFF9500)   // iOS orange
+private val RED         = Color(0xFFFF3B30)   // iOS red
+private val LABEL_PRI   = Color(0xFF000000)
+private val LABEL_SEC   = Color(0xFF3C3C43).copy(alpha = 0.6f)
+private val LABEL_TER   = Color(0xFF3C3C43).copy(alpha = 0.3f)
+private val SEPARATOR   = Color(0xFFC6C6C8)
+private val FILL_SEC    = Color(0xFFE5E5EA)
 
 private val STEP_TITLES = listOf(
-    "Step 1 of 6 — Patient Position",
-    "Step 2 of 6 — Leg Elevation",
-    "Step 3 of 6 — Consciousness Check",
-    "Step 4 of 6 — Injection Site",
-    "Step 5 of 6 — EpiPen Positioning",
-    "Step 6 of 6 — Simulated Injection",
-    "Training Complete"
+    "Patient Position",
+    "Leg Elevation",
+    "Consciousness Check",
+    "Injection Site",
+    "EpiPen Positioning",
+    "Simulated Injection",
+    "Drill Complete"
+)
+
+private val STEP_SUBTITLES = listOf(
+    "Step 1 of 6",
+    "Step 2 of 6",
+    "Step 3 of 6",
+    "Step 4 of 6",
+    "Step 5 of 6",
+    "Step 6 of 6",
+    ""
 )
 
 private val STEP_INSTRUCTIONS = listOf(
-    "Verify the simulated patient is lying flat on a firm surface. The camera overlay confirms the position estimate.",
-    "Raise the patient's legs above heart level. An arrow appears when legs appear too low — guide them upward.",
-    "Assess consciousness before proceeding.",
-    "Locate the outer mid-thigh injection zone. The pulsing target marker shows the correct area.",
+    "Verify the simulated patient is lying flat on a firm surface. The camera overlay confirms position.",
+    "Raise the patient's legs above heart level. An arrow guides you if the legs appear too low.",
+    "Tap the patient's shoulder and call their name loudly.",
+    "Locate the outer mid-thigh injection zone. The pulsing marker shows the correct area.",
     "Hold your wrist over the target zone. Arrows guide you to the correct position. Hold steady to confirm.",
     "Hold the trainer EpiPen firmly at 90° against the outer thigh for 10 seconds.",
     ""
 )
 
-/**
- * Step-by-step overlay panel for the sequential allergy response drill.
- *
- * Steps 0, 1, 3, 4 → camera panel at bottom
- * Step 2           → consciousness question card (centred, full-width)
- * Step 5           → injection countdown overlay (centred)
- * Step 6           → summary card (centred, scrollable)
- */
+private val STEP_ICONS: List<ImageVector> = listOf(
+    Icons.Rounded.PersonPin,
+    Icons.Rounded.ArrowUpward,
+    Icons.Rounded.RecordVoiceOver,
+    Icons.Rounded.GpsFixed,
+    Icons.Rounded.TouchApp,
+    Icons.Rounded.Timer,
+    Icons.Rounded.CheckCircle
+)
+
 @Composable
 fun BoxScope.AllergySequentialPanel(
     step: Int,
@@ -77,7 +98,7 @@ fun BoxScope.AllergySequentialPanel(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = 16.dp),
             onAnswer = onConsciousnessAnswer
         )
         5 -> InjectionCountdown(
@@ -90,7 +111,7 @@ fun BoxScope.AllergySequentialPanel(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = 16.dp),
             onFinish = onFinish
         )
         else -> CameraStepPanel(
@@ -125,88 +146,139 @@ private fun CameraStepPanel(
         else -> true
     }
     val buttonLabel = when {
-        step == 4 -> if (statusGreen) "Simulate Injection" else "Hold on target…"
+        step == 4 -> if (statusGreen) "Simulate Injection" else "Waiting for position…"
         canProceed -> "Continue"
         else -> "Waiting for camera…"
     }
 
     Surface(
-        color = SEQ_BG,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        tonalElevation = 8.dp,
+        color = CARD,
+        shadowElevation = 24.dp,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         modifier = modifier
     ) {
         Column(
-            Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(
-                STEP_TITLES.getOrElse(step) { "" },
-                color = SEQ_TEAL,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp
-            )
-            Text(
-                STEP_INSTRUCTIONS.getOrElse(step) { "" },
-                color = SEQ_TEXT,
-                fontSize = 12.sp,
-                lineHeight = 17.sp
-            )
-            if (statusText.isNotEmpty()) {
-                Surface(
-                    color = if (statusGreen) Color(0xFF0A1F0F) else Color(0xFF1A1000),
-                    shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(
-                        0.5.dp,
-                        if (statusGreen) SEQ_GREEN.copy(alpha = 0.5f) else SEQ_AMBER.copy(alpha = 0.5f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
+            // Step header row
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(
+                            if (statusGreen) GREEN.copy(alpha = 0.12f) else ACCENT.copy(alpha = 0.10f),
+                            CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
+                    Icon(
+                        imageVector = STEP_ICONS.getOrElse(step) { Icons.Rounded.Circle },
+                        contentDescription = null,
+                        tint = if (statusGreen) GREEN else ACCENT,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        statusText,
-                        color = if (statusGreen) SEQ_GREEN else SEQ_AMBER,
+                        STEP_SUBTITLES.getOrElse(step) { "" },
+                        color = LABEL_SEC,
                         fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        lineHeight = 17.sp
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        STEP_TITLES.getOrElse(step) { "" },
+                        color = LABEL_PRI,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
+
+            // Instruction text
+            Text(
+                STEP_INSTRUCTIONS.getOrElse(step) { "" },
+                color = LABEL_SEC,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+
+            // Status pill
+            if (statusText.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            if (statusGreen) GREEN.copy(alpha = 0.08f) else ORANGE.copy(alpha = 0.08f),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (statusGreen) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                        contentDescription = null,
+                        tint = if (statusGreen) GREEN else ORANGE,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        statusText,
+                        color = if (statusGreen) GREEN else ORANGE,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            // Primary action button
             Button(
                 onClick = onAction,
                 enabled = canProceed,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = SEQ_TEAL,
-                    disabledContainerColor = Color(0xFF1A3A38)
-                )
+                    containerColor = ACCENT,
+                    disabledContainerColor = FILL_SEC
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
             ) {
                 Text(
                     buttonLabel,
-                    color = if (canProceed) Color(0xFF080E1C) else SEQ_LABEL,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    color = if (canProceed) Color.White else LABEL_TER,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 15.sp
                 )
             }
-            Text(
-                "Simulation only. Follow 1 1 2 in a real emergency.",
-                color = SEQ_LABEL,
-                fontSize = 10.sp,
-                lineHeight = 14.sp
-            )
+
+            // Skip/continue link for testing
             if (onSkip != null && !canProceed) {
                 TextButton(
                     onClick = onSkip,
                     modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(vertical = 2.dp)
+                    contentPadding = PaddingValues(vertical = 0.dp)
                 ) {
                     Text(
-                        "Continue →",
-                        color = SEQ_LABEL,
-                        fontSize = 11.sp
+                        "Continue",
+                        color = ACCENT,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
+
+            Text(
+                "Simulation only • Call 1 1 2 in a real emergency",
+                color = LABEL_TER,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
@@ -217,73 +289,108 @@ private fun ConsciousnessCard(
     onAnswer: (Boolean) -> Unit
 ) {
     Surface(
-        color = Color(0xF2080E1C),
+        color = CARD,
         shape = RoundedCornerShape(20.dp),
-        border = androidx.compose.foundation.BorderStroke(0.5.dp, SEQ_BORDER),
+        shadowElevation = 16.dp,
         modifier = modifier
     ) {
         Column(
-            Modifier.padding(24.dp),
+            modifier = Modifier.padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                "Step 3 of 6",
-                color = SEQ_TEAL,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                "Consciousness Check",
-                color = SEQ_WHITE,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
-            )
-            Text(
-                "Tap the patient's shoulder and call their name loudly.\n\nIs the patient responding?",
-                color = SEQ_TEXT,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-                textAlign = TextAlign.Center
-            )
-            Surface(
-                color = Color(0xFF0A1420),
-                shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(0.5.dp, SEQ_BORDER),
-                modifier = Modifier.fillMaxWidth()
+            // Icon badge
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .background(ACCENT.copy(alpha = 0.10f), CircleShape),
+                contentAlignment = Alignment.Center
             ) {
-                Text(
-                    "In a real emergency: if unresponsive and not breathing normally, call 1 1 2 immediately and begin CPR. Do not delay emergency assistance.",
-                    color = SEQ_LABEL,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp,
-                    modifier = Modifier.padding(12.dp)
+                Icon(
+                    Icons.Rounded.RecordVoiceOver,
+                    contentDescription = null,
+                    tint = ACCENT,
+                    modifier = Modifier.size(28.dp)
                 )
             }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    "Step 3 of 6",
+                    color = LABEL_SEC,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    "Consciousness Check",
+                    color = LABEL_PRI,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "Tap the patient's shoulder and call their name loudly.\nIs the patient responding?",
+                    color = LABEL_SEC,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            HorizontalDivider(color = SEPARATOR, thickness = 0.5.dp)
+
+            // Safety note
             Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ORANGE.copy(alpha = 0.07f), RoundedCornerShape(10.dp))
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Icon(
+                    Icons.Rounded.Info,
+                    contentDescription = null,
+                    tint = ORANGE,
+                    modifier = Modifier.size(16.dp).padding(top = 1.dp)
+                )
+                Text(
+                    "In a real emergency: if unresponsive and not breathing normally, call 1 1 2 immediately and begin CPR.",
+                    color = LABEL_SEC,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            }
+
+            // YES / NO buttons
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Button(
+                OutlinedButton(
                     onClick = { onAnswer(false) },
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A0A0A))
+                    modifier = Modifier.weight(1f).height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = RED),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, RED.copy(alpha = 0.4f))
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Unresponsive", color = SEQ_RED, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
+                    Icon(Icons.Rounded.PersonOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Unresponsive", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 }
                 Button(
                     onClick = { onAnswer(true) },
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0A2A1A))
+                    modifier = Modifier.weight(1f).height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GREEN),
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Responding", color = SEQ_GREEN, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
+                    Icon(Icons.Rounded.Person, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Responding", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 }
             }
         }
@@ -295,72 +402,100 @@ private fun InjectionCountdown(
     countdown: Int,
     modifier: Modifier = Modifier
 ) {
-    val countColor by animateColorAsState(
+    val trackColor = FILL_SEC
+    val arcColor by animateColorAsState(
         targetValue = when {
-            countdown > 5 -> SEQ_TEAL
-            countdown > 2 -> SEQ_AMBER
-            else -> SEQ_GREEN
+            countdown > 5 -> ACCENT
+            countdown > 2 -> ORANGE
+            else -> GREEN
         },
-        label = "countdown_color"
+        animationSpec = tween(400),
+        label = "arc_color"
     )
-    val fraction = countdown / 10f
+    val fraction by animateFloatAsState(
+        targetValue = countdown / 10f,
+        animationSpec = tween(900),
+        label = "arc_fraction"
+    )
 
-    Column(
-        modifier = modifier
-            .background(Color(0xCC080E1C), RoundedCornerShape(20.dp))
-            .padding(32.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    Surface(
+        color = CARD,
+        shape = RoundedCornerShape(24.dp),
+        shadowElevation = 20.dp,
+        modifier = modifier.padding(horizontal = 32.dp)
     ) {
-        Text(
-            "Step 6 of 6",
-            color = SEQ_TEAL,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            "Simulated Injection",
-            color = SEQ_WHITE,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Box(contentAlignment = Alignment.Center) {
-            Canvas(modifier = Modifier.size(100.dp)) {
-                val strokeWidth = 10.dp.toPx()
-                drawArc(
-                    color = Color(0xFF1E3A5F),
-                    startAngle = -90f,
-                    sweepAngle = 360f,
-                    useCenter = false,
-                    style = Stroke(width = strokeWidth)
-                )
-                drawArc(
-                    color = countColor,
-                    startAngle = -90f,
-                    sweepAngle = 360f * fraction,
-                    useCenter = false,
-                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                )
-            }
+        Column(
+            modifier = Modifier.padding(32.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Text(
-                countdown.toString(),
-                color = countColor,
-                fontSize = 36.sp,
+                "Step 6 of 6",
+                color = LABEL_SEC,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                "Simulated Injection",
+                color = LABEL_PRI,
+                fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
+
+            Box(contentAlignment = Alignment.Center) {
+                Canvas(modifier = Modifier.size(120.dp)) {
+                    val strokeWidth = 10.dp.toPx()
+                    drawArc(
+                        color = trackColor,
+                        startAngle = -90f,
+                        sweepAngle = 360f,
+                        useCenter = false,
+                        style = Stroke(width = strokeWidth)
+                    )
+                    drawArc(
+                        color = arcColor,
+                        startAngle = -90f,
+                        sweepAngle = 360f * fraction,
+                        useCenter = false,
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        countdown.toString(),
+                        color = arcColor,
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text("sec", color = LABEL_SEC, fontSize = 12.sp)
+                }
+            }
+
+            Text(
+                "Hold trainer EpiPen firmly at 90° to the outer thigh",
+                color = LABEL_SEC,
+                fontSize = 14.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(ORANGE.copy(alpha = 0.07f), RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Warning, contentDescription = null, tint = ORANGE, modifier = Modifier.size(14.dp))
+                Text(
+                    "Trainer simulation only — never use a live injector for practice.",
+                    color = LABEL_SEC,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
         }
-        Text(
-            "Hold trainer EpiPen firmly at 90° to the outer thigh",
-            color = SEQ_TEXT,
-            fontSize = 13.sp,
-            textAlign = TextAlign.Center
-        )
-        Text(
-            "Trainer simulation only — never use a live injector for practice.",
-            color = SEQ_LABEL,
-            fontSize = 10.sp,
-            textAlign = TextAlign.Center
-        )
     }
 }
 
@@ -372,105 +507,142 @@ private fun SummaryCard(
     onFinish: () -> Unit
 ) {
     Surface(
-        color = Color(0xF5080E1C),
+        color = CARD,
         shape = RoundedCornerShape(20.dp),
-        border = androidx.compose.foundation.BorderStroke(0.5.dp, SEQ_BORDER),
+        shadowElevation = 16.dp,
         modifier = modifier
     ) {
         Column(
-            Modifier
+            modifier = Modifier
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Success header
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Text("✓", color = SEQ_GREEN, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(GREEN.copy(alpha = 0.12f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.CheckCircle,
+                        contentDescription = null,
+                        tint = GREEN,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
                 Column {
                     Text(
                         "Drill Complete",
-                        color = SEQ_WHITE,
-                        fontSize = 18.sp,
+                        color = LABEL_PRI,
+                        fontSize = 20.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text("All 6 steps completed", color = SEQ_LABEL, fontSize = 12.sp)
+                    Text(
+                        "All 6 steps completed",
+                        color = LABEL_SEC,
+                        fontSize = 13.sp
+                    )
                 }
             }
 
-            HorizontalDivider(color = SEQ_BORDER, thickness = 0.5.dp)
+            HorizontalDivider(color = SEPARATOR, thickness = 0.5.dp)
 
+            // Positioning summary section
             Text(
                 "POSITIONING SUMMARY",
-                color = SEQ_LABEL,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp
+                color = LABEL_SEC,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.8.sp
             )
 
             if (totalCorrections == 0) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(GREEN.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("✓", color = SEQ_GREEN, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = GREEN, modifier = Modifier.size(18.dp))
                     Text(
                         "No positioning corrections needed",
-                        color = SEQ_TEXT,
-                        fontSize = 13.sp
+                        color = GREEN,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             } else {
-                Surface(
-                    color = Color(0xFF1A1000),
-                    shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(
-                        0.5.dp, SEQ_AMBER.copy(alpha = 0.4f)
-                    ),
-                    modifier = Modifier.fillMaxWidth()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(ORANGE.copy(alpha = 0.07f), RoundedCornerShape(12.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Rounded.SwapHoriz, contentDescription = null, tint = ORANGE, modifier = Modifier.size(18.dp))
                         Text(
                             "$totalCorrections directional correction${if (totalCorrections != 1) "s" else ""} during EpiPen positioning",
-                            color = SEQ_AMBER,
-                            fontSize = 13.sp,
+                            color = ORANGE,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        mistakesByDirection.forEach { (dir, count) ->
+                    }
+                    mistakesByDirection.forEach { (dir, count) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("• $dir", color = SEQ_TEXT, fontSize = 12.sp)
-                                Text("${count}×", color = SEQ_LABEL, fontSize = 12.sp)
+                                Box(
+                                    Modifier
+                                        .size(5.dp)
+                                        .background(LABEL_SEC, CircleShape)
+                                )
+                                Text(dir, color = LABEL_PRI, fontSize = 13.sp)
                             }
+                            Text("${count}×", color = LABEL_SEC, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         }
                     }
                 }
             }
 
-            HorizontalDivider(color = SEQ_BORDER, thickness = 0.5.dp)
+            HorizontalDivider(color = SEPARATOR, thickness = 0.5.dp)
 
             Text(
-                "This drill covers simulated allergy response training steps only. It does not replace full clinical training. Performance in this drill does not indicate professional certification or clinical readiness. Follow emergency dispatcher instructions in a real emergency. Emergency: 1 1 2.",
-                color = SEQ_LABEL,
-                fontSize = 10.sp,
-                lineHeight = 14.sp
+                "This drill covers simulated allergy response training steps only. It does not replace full clinical training. Performance in this drill does not indicate professional certification or clinical readiness. Emergency: 1 1 2.",
+                color = LABEL_TER,
+                fontSize = 11.sp,
+                lineHeight = 15.sp
             )
 
             Button(
                 onClick = onFinish,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = SEQ_TEAL)
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = ACCENT),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
             ) {
                 Text(
                     "Done",
-                    color = Color(0xFF080E1C),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp
                 )
             }
         }

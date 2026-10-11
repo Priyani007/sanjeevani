@@ -8,53 +8,24 @@ import com.sanjeevani.model.*
 
 private enum class FastStep { INTRO, FACE, ARM, SPEECH, RESULT }
 
-private val STEP_DURATION_MS = mapOf(
-    FastStep.INTRO  to 3_000L,
-    FastStep.FACE   to 10_000L,
-    FastStep.ARM    to 12_000L,
-    FastStep.SPEECH to 0L,   // waits for external speech input
-    FastStep.RESULT to 0L
-)
-
 class StrokeModule : EmergencyModule {
-
-    private var startMs = -1L
-    private var stepStartMs = -1L
     private var currentStep = FastStep.INTRO
     private var lastSpokenStep: FastStep? = null
 
     private var facePositiveCount = 0
+    private var faceObservationFrames = 0
+    private var maxFaceAsymmetryRatio = 0f
     private var armDriftDetected = false
+    private var armObservationFrames = 0
+    private var armDriftPositiveCount = 0
     private var speechPositive = false
     private var speechInputReceived = false
 
     override fun process(frame: PerceptionFrame, nowMs: Long): ModuleResult {
-        if (startMs < 0) { startMs = nowMs; stepStartMs = nowMs }
-        val stepElapsed = nowMs - stepStartMs
-
         when (currentStep) {
-            FastStep.INTRO -> {
-                if (stepElapsed > STEP_DURATION_MS[FastStep.INTRO]!!) advanceStep(nowMs)
-            }
-            FastStep.FACE -> {
-                assessFaceAsymmetry(frame)
-                if (stepElapsed > STEP_DURATION_MS[FastStep.FACE]!!) advanceStep(nowMs)
-            }
-            FastStep.ARM -> {
-                assessArmDrift(frame)
-                if (stepElapsed > STEP_DURATION_MS[FastStep.ARM]!!) advanceStep(nowMs)
-            }
-            FastStep.SPEECH -> {
-                // 45 s timeout auto-advances if user forgets to tap a speech button
-                if (!speechInputReceived && stepElapsed > 45_000L) {
-                    speechInputReceived = true
-                    speechPositive = false
-                    advanceStep(nowMs)
-                }
-            }
-            FastStep.RESULT -> {
-                // Terminal state
-            }
+            FastStep.FACE -> assessFaceAsymmetry(frame)
+            FastStep.ARM -> assessArmDrift(frame)
+            else -> Unit
         }
 
         val stepChanged = currentStep != lastSpokenStep
@@ -75,35 +46,52 @@ class StrokeModule : EmergencyModule {
         if (currentStep == FastStep.SPEECH) {
             speechPositive = positive
             speechInputReceived = true
-            currentStep = FastStep.RESULT
-            lastSpokenStep = null  // force re-voice on next frame
         }
     }
 
+    /** Training steps are learner-driven. Time and camera frames never advance the protocol. */
+    fun selectTrainingStep(stepIndex: Int) {
+        val next = when (stepIndex) {
+            1 -> FastStep.FACE
+            2 -> FastStep.ARM
+            3 -> FastStep.SPEECH
+            else -> FastStep.INTRO
+        }
+        if (next != currentStep) {
+            currentStep = next
+            lastSpokenStep = null
+        }
+    }
+
+    fun completeTraining() {
+        currentStep = FastStep.RESULT
+        lastSpokenStep = null
+    }
+
     override fun reset() {
-        startMs = -1L; stepStartMs = -1L
         currentStep = FastStep.INTRO
         lastSpokenStep = null
         facePositiveCount = 0
+        faceObservationFrames = 0
+        maxFaceAsymmetryRatio = 0f
         armDriftDetected = false
+        armObservationFrames = 0
+        armDriftPositiveCount = 0
         speechPositive = false
         speechInputReceived = false
     }
 
-    private fun advanceStep(nowMs: Long) {
-        val steps = FastStep.values()
-        val next = steps.getOrNull(steps.indexOf(currentStep) + 1) ?: FastStep.RESULT
-        currentStep = next
-        stepStartMs = nowMs
-    }
-
     private fun assessFaceAsymmetry(frame: PerceptionFrame) {
-        val pose = frame.poseLandmarks ?: return
-        if (pose.size <= 12) return
-        val ls = pose[11]; val rs = pose[12]
-        if (ls.visibility < 0.4f || rs.visibility < 0.4f) return
-        val asymmetry = kotlin.math.abs(ls.y - rs.y)
-        if (asymmetry > 0.07f) facePositiveCount++
+        // Face Mesh mouth corners (61, 291), normalized by eye-to-eye width (33, 263).
+        // This is a training observation, not a stroke diagnosis.
+        val face = frame.faceLandmarks ?: return
+        if (face.size <= 291) return
+        val faceWidth = kotlin.math.abs(face[33].x - face[263].x)
+        if (faceWidth < 0.08f) return
+        faceObservationFrames++
+        val asymmetryRatio = kotlin.math.abs(face[61].y - face[291].y) / faceWidth
+        maxFaceAsymmetryRatio = maxOf(maxFaceAsymmetryRatio, asymmetryRatio)
+        if (asymmetryRatio > 0.08f) facePositiveCount++
     }
 
     private fun assessArmDrift(frame: PerceptionFrame) {
@@ -112,9 +100,13 @@ class StrokeModule : EmergencyModule {
         val le = pose[13]; val re = pose[14]
         val lw = pose[15]; val rw = pose[16]
         if (le.visibility < 0.4f || re.visibility < 0.4f) return
+        if (lw.visibility < 0.4f || rw.visibility < 0.4f) return
+        armObservationFrames++
         val lDroop = if (lw.visibility > 0.4f) lw.y - le.y else 0f
         val rDroop = if (rw.visibility > 0.4f) rw.y - re.y else 0f
-        if (kotlin.math.abs(lDroop - rDroop) > 0.12f) armDriftDetected = true
+        if (kotlin.math.abs(lDroop - rDroop) > 0.12f) armDriftPositiveCount++
+        // Require temporal agreement; one noisy frame must never become a finding.
+        armDriftDetected = armDriftPositiveCount >= 5
     }
 
     private fun countPositives(): Int {
@@ -133,9 +125,8 @@ class StrokeModule : EmergencyModule {
         FastStep.RESULT  -> {
             val n = countPositives()
             when {
-                n >= 2 -> "Two or more FAST signs detected. This is very likely a stroke. Call one one two immediately. Note when symptoms first appeared — this matters for treatment. Do not give food or water."
-                n == 1 -> "One FAST sign detected. Keep them calm. Call one one two now. Note when symptoms began. Do not give food or water. Watch for any worsening."
-                else   -> "No FAST signs detected now. If any symptoms appeared earlier and have since cleared, this may still be a TIA — a warning sign of stroke. Note the time and call one one two if you are at all concerned."
+                n >= 1 -> "A FAST warning sign was reported or observed. Call one one two now. The camera cannot diagnose stroke. Note when symptoms began and follow the dispatcher."
+                else   -> "The camera did not confirm a FAST sign. This does not rule out stroke. Call one one two for any new FAST symptom and follow the dispatcher."
             }
         }
     }
@@ -148,15 +139,20 @@ class StrokeModule : EmergencyModule {
 
         val statusText = when (currentStep) {
             FastStep.INTRO   -> "FAST Test"
-            FastStep.FACE    -> "Face — check smile"
-            FastStep.ARM     -> "Arms — check drift"
-            FastStep.SPEECH  -> "Speech — check clarity"
-            FastStep.RESULT  -> if (isHighRisk) "⚠ Stroke likely" else "Low risk"
+            FastStep.FACE    -> if (faceObservationFrames >= 5) "Face reference visible • not a diagnosis" else "Move face into camera frame"
+            FastStep.ARM     -> if (armObservationFrames >= 5) "Both arms visible • compare together" else "Show both arms to the camera"
+            FastStep.SPEECH  -> if (speechInputReceived) "Speech response recorded" else "Speech cannot be camera-assessed"
+            FastStep.RESULT  -> if (isHighRisk) "⚠ FAST sign observed" else "Assessment unconfirmed"
         }
 
         return AROverlaySpec(
             statusText = statusText,
-            statusColorGreen = currentStep == FastStep.RESULT && !isHighRisk,
+            statusColorGreen = when (currentStep) {
+                FastStep.FACE -> faceObservationFrames >= 5
+                FastStep.ARM -> armObservationFrames >= 5
+                FastStep.SPEECH -> speechInputReceived
+                else -> false
+            },
             emergencyType = EmergencyType.FAST_STROKE,
             phaseProgress = stepProgress(currentStep),
             leftShoulderY = lsy,
@@ -176,9 +172,13 @@ class StrokeModule : EmergencyModule {
     }
 
     fun getStrokeSignals(): StrokeSignals = StrokeSignals(
-        faceAsymmetryScore = (facePositiveCount / 10f).coerceIn(0f, 1f),
+        faceAsymmetryScore = maxFaceAsymmetryRatio,
         armDriftDetected = armDriftDetected,
         speechPrompted = speechInputReceived,
-        positiveTestCount = countPositives()
+        positiveTestCount = countPositives(),
+        faceObservationFrames = faceObservationFrames,
+        armObservationFrames = armObservationFrames
     )
+
+    val isResultReached: Boolean get() = currentStep == FastStep.RESULT
 }

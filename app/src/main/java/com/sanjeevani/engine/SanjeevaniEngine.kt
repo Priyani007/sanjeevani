@@ -28,14 +28,18 @@ class SanjeevaniEngine {
     private var lastFrameTimestamp = -1L
     private var announcedVersion = -1L
     private var lastCorrectionTs = -10000L
-    private var paceVoiceTs = -10000L
-    private var milestone = 0
     private var activeSince = 0L
     private var trackedHand: String? = null
     private var transitionLogged = 0L
     private var frozenSternumTarget: PointF? = null
     private var pendingResponseCheck = false
-    private var responseVoiceOverride: String? = null
+    // Session analytics — cleared on entry to COMPRESSION_ACTIVE and on resetForNewEmergency
+    private val handPlacementFaults = mutableMapOf<SpatialAction, Int>()
+    private var compressionActiveFrames = 0
+    private var compressionReliableFrames = 0
+    private var rateOnTargetFrames = 0
+    private var rateTooSlowFrames = 0
+    private var rateTooFastFrames = 0
     private var pendingAllergicVoice: String? = null
     private var latestAllergicOverlay: AROverlaySpec? = null
     private var pendingStrokeVoice: String? = null
@@ -52,6 +56,7 @@ class SanjeevaniEngine {
     }
     val stateVersion get() = fsm.version
     val history get() = fsm.history.toList()
+    val isPendingConsciousnessCheck: Boolean get() = pendingResponseCheck
     fun getFSMState() = fsm.getState()
     fun instruction() = fsm.instruction()
     fun expectsAnswer() = fsm.expectsAnswer()
@@ -72,8 +77,9 @@ class SanjeevaniEngine {
         val pose = safeFrame.poseLandmarks
         val poseConf = listOf(11,12,23,24).map { pose?.getOrNull(it)?.visibility ?: 0f }.minOrNull() ?: 0f
         val spatial = spatialReasoner.compute(pose, safeFrame.leftHandLandmarks, safeFrame.rightHandLandmarks, input.timestamp)
-        // Only the active position step examines lying posture.
-        val patient = if (state == FSMState.CPR_POSITIONING)
+        // Only an active, position-gated step examines lying posture.
+        val patient = if (state == FSMState.CPR_POSITIONING ||
+            (state == FSMState.ALLERGIC_PROTOCOL && allergicModule.currentTrainingStepIndex == 2))
             patientDetector.isPatientLying(pose, safeFrame.worldLandmarks) else false to 0f
         val handsConf = if (spatial.handMidpoint != null) .8f else 0f
         val confidence = ConfidenceState(poseConf, handsConf, patient.second,
@@ -88,7 +94,7 @@ class SanjeevaniEngine {
         } else {
             frozenSternumTarget = null
         }
-        if (state == FSMState.COMPRESSION_ACTIVE && newHand && spatial.handMidpoint != null &&
+        if (state != FSMState.COMPRESSION_ACTIVE && newHand && spatial.handMidpoint != null &&
             spatial.sternumTarget != null && spatial.errorMagnitude < .12f && poseConf >= .65f) {
             if (trackedHand != spatial.trackedHand) compressionDetector.trackingLost()
             trackedHand = spatial.trackedHand
@@ -96,7 +102,7 @@ class SanjeevaniEngine {
                 (it[23].y + it[24].y - it[11].y - it[12].y)/2f) } ?: 0f
             if (torso > .1f) compressionDetector.addSample(
                 (spatial.handMidpoint.y - spatial.sternumTarget.y) / torso, input.handTimestamp)
-        } else if (state == FSMState.COMPRESSION_ACTIVE && (!freshHands || spatial.handMidpoint == null ||
+        } else if (state != FSMState.COMPRESSION_ACTIVE && (!freshHands || spatial.handMidpoint == null ||
                 spatial.errorMagnitude >= .12f || poseConf < .65f)) compressionDetector.trackingLost()
         if (newPose || pose == null) {
             if (state != FSMState.HAND_POSITIONING || newHand || spatial.handMidpoint == null) {
@@ -107,6 +113,26 @@ class SanjeevaniEngine {
         lastPoseTimestamp = maxOf(lastPoseTimestamp, input.poseTimestamp)
         lastHandTimestamp = maxOf(lastHandTimestamp, input.handTimestamp)
         val temporal = compressionDetector.getTemporalState(input.timestamp)
+        // Accumulate rate analytics during active CPR
+        if (state == FSMState.COMPRESSION_ACTIVE) {
+            compressionActiveFrames++
+            if (temporal.trackingReliable) {
+                compressionReliableFrames++
+                val bpm = temporal.compressionRateBPM
+                when {
+                    bpm in 100f..120f -> rateOnTargetFrames++
+                    bpm < 100f -> rateTooSlowFrames++
+                    else -> rateTooFastFrames++
+                }
+            }
+        }
+        // Accumulate session mistakes for end analysis
+        if (state == FSMState.HAND_POSITIONING && newPose) {
+            val a = spatial.correctiveAction
+            if (a !in setOf(SpatialAction.CORRECT, SpatialAction.UNSURE, SpatialAction.TRACKING_LOST)) {
+                handPlacementFaults[a] = (handPlacementFaults[a] ?: 0) + 1
+            }
+        }
         latest = latest.copy(spatial = spatial, temporal = temporal, confidence = confidence,
             isPatientDetected = patient.first)
         // Allergic reaction: timer-based phase progression with camera-anchored AR overlays.
@@ -133,9 +159,12 @@ class SanjeevaniEngine {
             announcedVersion = fsm.version
             voice = fsm.instruction()
             if (state == FSMState.COMPRESSION_ACTIVE) {
-                activeSince = nowMs; compressionDetector.reset(); milestone = 0
-                pendingResponseCheck = false; responseVoiceOverride = null
+                activeSince = nowMs; compressionDetector.reset()
+                pendingResponseCheck = false
+                compressionActiveFrames = 0; compressionReliableFrames = 0
+                rateOnTargetFrames = 0; rateTooSlowFrames = 0; rateTooFastFrames = 0
                 latest = latest.copy(temporal = TemporalState())
+                voice = null  // entry speech suppressed; ViewModel counting coroutine handles all voice
             }
             if (state == FSMState.ALLERGIC_PROTOCOL) {
                 // Module owns all phase voice; reset so it starts clean from this entry.
@@ -151,7 +180,6 @@ class SanjeevaniEngine {
         }
         val spatial = latest.spatial
         val temporal = latest.temporal
-        if (voice == null) responseVoiceOverride?.let { voice = it; responseVoiceOverride = null }
         // Allergic reaction phase voice: fires once per phase transition (timer-driven).
         if (voice == null && state == FSMState.ALLERGIC_PROTOCOL) {
             pendingAllergicVoice?.let { voice = it; pendingAllergicVoice = null }
@@ -159,20 +187,6 @@ class SanjeevaniEngine {
         // Stroke FAST step voice: fires on each step transition.
         if (voice == null && state == FSMState.STROKE_FAST_TEST) {
             pendingStrokeVoice?.let { voice = it; pendingStrokeVoice = null }
-        }
-        if (voice == null && state == FSMState.COMPRESSION_ACTIVE && temporal.trackingReliable &&
-            nowMs - paceVoiceTs >= (if (temporal.rateStatus == RateStatus.TOO_SLOW) 2000L else 4000L)) {
-            voice = when {
-                temporal.rateStatus == RateStatus.TOO_SLOW -> "Faster! Faster! Increase the pace!"
-                temporal.rateStatus == RateStatus.TOO_FAST -> "Slow down slightly."
-                temporal.compressionCount / 30 > milestone && !pendingResponseCheck -> {
-                    milestone = temporal.compressionCount / 30
-                    pendingResponseCheck = true
-                    "Are they showing any signs of life, or responding at all? Say yes or no."
-                }
-                else -> null
-            }
-            if (voice != null) paceVoiceTs = nowMs
         }
         if (voice == null && state == FSMState.HAND_POSITIONING && nowMs - lastCorrectionTs >= 3000) {
             voice = when (spatial.correctiveAction) {
@@ -194,7 +208,7 @@ class SanjeevaniEngine {
                 jointPoints = buildJointPoints(frame?.poseLandmarks),
                 stepCardTitle = phaseLabel,
                 stepCardInstruction = base.guidanceText.takeIf { it.isNotEmpty() } ?: fsm.instruction(),
-                stepCardStatus = if (base.phaseProgress >= 1.0f) "Assessment complete" else "FAST Assessment",
+                stepCardStatus = base.statusText.takeIf { it.isNotEmpty() } ?: "Camera observation unavailable",
                 stepCardBgColor = if (base.statusColorGreen) android.graphics.Color.rgb(34, 139, 34)
                     else android.graphics.Color.rgb(185, 40, 40),
                 showCPRBadge = false,
@@ -216,8 +230,8 @@ class SanjeevaniEngine {
                 jointPoints = buildJointPoints(frame?.poseLandmarks),
                 stepCardTitle = phaseTitle,
                 stepCardInstruction = base.guidanceText.takeIf { it.isNotEmpty() } ?: fsm.instruction(),
-                stepCardStatus = "Follow on-screen guidance",
-                stepCardBgColor = if (base.statusColorGreen) android.graphics.Color.rgb(34, 139, 34)
+                stepCardStatus = allergicModule.currentAssessmentStatus,
+                stepCardBgColor = if (allergicModule.currentAssessmentGreen) android.graphics.Color.rgb(34, 139, 34)
                     else android.graphics.Color.rgb(185, 40, 40),
                 showCPRBadge = false,
                 state = state,
@@ -245,9 +259,7 @@ class SanjeevaniEngine {
         val status = when (state) {
             FSMState.CPR_POSITIONING -> "Not yet verified • camera estimate"
             FSMState.POSITION_CONFIRMED -> "✓ Estimate stable • confirm surface"
-            FSMState.COMPRESSION_ACTIVE -> if (temporal.trackingReliable)
-                "${temporal.compressionCount} estimated cycles | ${temporal.compressionRateBPM.toInt()} BPM"
-                else "${temporal.compressionCount} estimated cycles • tracking unavailable"
+            FSMState.COMPRESSION_ACTIVE -> "Counting with you • push hard and fast"
             FSMState.HAND_POSITIONING -> "Approximate marker • not clinical verification"
             else -> "Follow dispatcher instructions"
         }
@@ -297,9 +309,7 @@ class SanjeevaniEngine {
         if (fsm.getState() == FSMState.COMPRESSION_ACTIVE && pendingResponseCheck) {
             pendingResponseCheck = false
             return when (answer) {
-                Answer.YES, Answer.CHANGED -> fsm.answer(Answer.CHANGED, SystemClock.elapsedRealtime(), expectedVersion)
-                Answer.NO -> { responseVoiceOverride = "No signs yet. Good. Keep going."; true }
-                Answer.UNCERTAIN -> { responseVoiceOverride = "Okay. Keep going and watch them carefully."; true }
+                Answer.YES, Answer.NO, Answer.UNCERTAIN -> true
                 else -> fsm.answer(answer, SystemClock.elapsedRealtime(), expectedVersion)
             }
         }
@@ -309,7 +319,6 @@ class SanjeevaniEngine {
         visionAfter = SystemClock.elapsedRealtime()
         frozenSternumTarget = null
         pendingResponseCheck = false
-        responseVoiceOverride = null
         spatialReasoner.reset()
         compressionDetector.trackingLost()
         // For allergic reaction and stroke, the module timer continues when camera is unavailable.
@@ -318,6 +327,66 @@ class SanjeevaniEngine {
         if (fsm.getState() == FSMState.STROKE_FAST_TEST) pendingStrokeVoice = null
         latest = latest.copy(spatial = SpatialState(correctiveAction = SpatialAction.TRACKING_LOST),
             temporal = compressionDetector.getTemporalState(visionAfter))
+    }
+
+    fun buildSessionReport(): CprSessionReport {
+        val elapsed = if (activeSince > 0L) ((SystemClock.elapsedRealtime() - activeSince) / 1000).toInt() else 0
+        val mistakes = mutableListOf<String>()
+
+        // Step completion
+        val postureCompleted = fsm.completed.contains(FSMState.POSTURE_CHECK)
+        val positionConfirmedReached = fsm.completed.contains(FSMState.POSITION_CONFIRMED)
+        if (!positionConfirmedReached) mistakes.add("Patient position was not camera-confirmed — always verify the person is on their back on a firm surface")
+        if (!postureCompleted) mistakes.add("Posture check step was skipped — keep arms straight and shoulders directly above hands")
+
+        // Hand placement
+        val dirLabels = mapOf(
+            SpatialAction.MOVE_UP    to "Too low on chest (below sternum)",
+            SpatialAction.MOVE_DOWN  to "Too high on chest (above target)",
+            SpatialAction.MOVE_LEFT  to "Shifted right of centre",
+            SpatialAction.MOVE_RIGHT to "Shifted left of centre"
+        )
+        val handFaultMap = mutableMapOf<String, Int>()
+        var totalFaults = 0
+        handPlacementFaults.forEach { (action, count) ->
+            dirLabels[action]?.let { label ->
+                handFaultMap[label] = count
+                totalFaults += count
+            }
+        }
+        val dominant = handPlacementFaults.maxByOrNull { it.value }
+        if (dominant != null && dominant.value >= 6) {
+            mistakes.add("Hand placement: ${dirLabels[dominant.key] ?: "off target"} was detected ${dominant.value} times during positioning")
+        }
+
+        // Rate analysis
+        val reliablePct = if (compressionActiveFrames > 0) compressionReliableFrames * 100 / compressionActiveFrames else 0
+        val rateTotal = rateOnTargetFrames + rateTooSlowFrames + rateTooFastFrames
+        val onTargetPct = if (rateTotal > 0) rateOnTargetFrames * 100 / rateTotal else 0
+        val tooSlowPct = if (rateTotal > 0) rateTooSlowFrames * 100 / rateTotal else 0
+        val tooFastPct = if (rateTotal > 0) rateTooFastFrames * 100 / rateTotal else 0
+        if (rateTotal > 0) {
+            when {
+                tooSlowPct > 40 -> mistakes.add("Compression rate was too slow for more than 40% of the measured period — target 100–120 per minute")
+                tooFastPct > 40 -> mistakes.add("Compression rate was too fast for more than 40% of the measured period — target 100–120 per minute")
+            }
+        }
+        if (reliablePct < 30 && elapsed > 10) mistakes.add("Camera tracking was unavailable for most of the session — depth and rate could not be measured")
+
+        return CprSessionReport(
+            compressionCount = latest.temporal.compressionCount,
+            elapsedSeconds = elapsed,
+            bpmAtEnd = latest.temporal.compressionRateBPM.toInt(),
+            mistakes = mistakes,
+            handFaultsByDirection = handFaultMap,
+            totalHandFaults = totalFaults,
+            postureCheckCompleted = postureCompleted,
+            positionConfirmed = positionConfirmedReached,
+            trackingAvailablePct = reliablePct,
+            rateOnTargetPct = onTargetPct,
+            rateTooSlowPct = tooSlowPct,
+            rateTooFastPct = tooFastPct
+        )
     }
 
     /** Reset the engine and FSM to IDLE so a new training session can be selected. */
@@ -332,16 +401,17 @@ class SanjeevaniEngine {
         spatialReasoner.reset()
         frozenSternumTarget = null
         pendingResponseCheck = false
-        responseVoiceOverride = null
+        handPlacementFaults.clear()
+        compressionActiveFrames = 0; compressionReliableFrames = 0
+        rateOnTargetFrames = 0; rateTooSlowFrames = 0; rateTooFastFrames = 0
         visionAfter = SystemClock.elapsedRealtime()
         announcedVersion = -1L
         lastCorrectionTs = -10000L
-        paceVoiceTs = -10000L
-        milestone = 0
         activeSince = 0L
         latest = GuidanceState()
         fsm.resetForNewSession(SystemClock.elapsedRealtime())
     }
+    fun markConsciousnessCheckPending() { pendingResponseCheck = true }
     fun confirmNoResponse() { answer(Answer.NO) }
     fun onPatientResponsive() { answer(Answer.YES) }
     fun setUserSelectedEmergency(type: EmergencyType) { fsm.setUserSelectedEmergency(type, SystemClock.elapsedRealtime()) }
@@ -351,6 +421,39 @@ class SanjeevaniEngine {
         // Voice for RESULT step is buffered on the next process() call; clear any stale pending voice now.
         pendingStrokeVoice = null
     }
+
+    fun selectCameraTrainingStep(type: EmergencyType, stepIndex: Int) {
+        when (type) {
+            EmergencyType.FAST_STROKE -> strokeModule.selectTrainingStep(stepIndex)
+            EmergencyType.ALLERGIC_REACTION -> allergicModule.selectTrainingStep(stepIndex)
+            else -> return
+        }
+        // Invalidate queued voice/overlay from the previous learner-controlled step.
+        pendingStrokeVoice = null
+        pendingAllergicVoice = null
+        latestStrokeOverlay = null
+        latestAllergicOverlay = null
+    }
+
+    fun completeCameraTraining(type: EmergencyType) {
+        if (type == EmergencyType.FAST_STROKE) strokeModule.completeTraining()
+    }
+    private fun batchCount(batchIndex: Int): String {
+        val start = batchIndex * 5
+        return CPR_COUNT_WORDS.slice(start until start + 5).joinToString("! ") + "!"
+    }
+
+    companion object {
+        private val CPR_COUNT_WORDS = listOf(
+            "One", "Two", "Three", "Four", "Five",
+            "Six", "Seven", "Eight", "Nine", "Ten",
+            "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+            "Sixteen", "Seventeen", "Eighteen", "Nineteen", "Twenty",
+            "Twenty-one", "Twenty-two", "Twenty-three", "Twenty-four", "Twenty-five",
+            "Twenty-six", "Twenty-seven", "Twenty-eight", "Twenty-nine", "Thirty"
+        )
+    }
+
     // iOS-matching skeleton bones (mirrors Bones.swift — no face/finger clutter)
     private val SKELETON_BONES = listOf(
         // Neck: nose → shoulders (approximates iOS neck_1 → spine_7 → shoulders)
@@ -437,6 +540,19 @@ class SanjeevaniEngine {
         return FACE_CONTOUR_INDICES.mapNotNull { i ->
             if (i < face.size) PointF(face[i].x, face[i].y) else null
         }
+    }
+
+    fun getTrainingSessionSnapshot(): TrainingSessionSnapshot {
+        val temporal = compressionDetector.getTemporalState(SystemClock.elapsedRealtime())
+        return TrainingSessionSnapshot(
+            completedFSMStates = fsm.completed.toSet(),
+            compressionCount = temporal.compressionCount,
+            rateStatus = temporal.rateStatus,
+            strokeSignals = strokeModule.getStrokeSignals(),
+            strokeIsComplete = strokeModule.isResultReached,
+            allergicPhaseOrdinal = allergicModule.currentPhaseOrdinal,
+            emergencyType = fsm.getConfirmedEmergencyType()
+        )
     }
 
 }

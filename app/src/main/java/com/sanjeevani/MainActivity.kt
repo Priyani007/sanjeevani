@@ -12,6 +12,8 @@ import androidx.activity.viewModels
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
@@ -160,30 +162,61 @@ class MainActivity : ComponentActivity() {
                 Scaffold(
                     bottomBar = {
                         if (showBottomNav) {
-                            NavigationBar {
+                            NavigationBar(
+                                containerColor = androidx.compose.ui.graphics.Color.White,
+                                tonalElevation = 0.dp
+                            ) {
                                 NavigationBarItem(
                                     selected = currentTab == "train",
                                     onClick = { destination = "home" },
-                                    icon = { Text("🏋️", fontSize = 20.sp) },
-                                    label = { Text("Train") }
+                                    icon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Rounded.FitnessCenter, contentDescription = null) },
+                                    label = { Text("Train") },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        selectedTextColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        unselectedIconColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        unselectedTextColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        indicatorColor = androidx.compose.ui.graphics.Color(0xFF007AFF).copy(alpha = 0.10f)
+                                    )
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == "practice",
                                     onClick = { destination = "practice" },
-                                    icon = { Text("🎯", fontSize = 20.sp) },
-                                    label = { Text("Practice") }
+                                    icon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Rounded.TrackChanges, contentDescription = null) },
+                                    label = { Text("Practice") },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        selectedTextColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        unselectedIconColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        unselectedTextColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        indicatorColor = androidx.compose.ui.graphics.Color(0xFF007AFF).copy(alpha = 0.10f)
+                                    )
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == "analytics",
                                     onClick = { destination = "analytics" },
-                                    icon = { Text("📊", fontSize = 20.sp) },
-                                    label = { Text("Analytics") }
+                                    icon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Rounded.BarChart, contentDescription = null) },
+                                    label = { Text("Analytics") },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        selectedTextColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        unselectedIconColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        unselectedTextColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        indicatorColor = androidx.compose.ui.graphics.Color(0xFF007AFF).copy(alpha = 0.10f)
+                                    )
                                 )
                                 NavigationBarItem(
                                     selected = currentTab == "profile",
                                     onClick = { destination = "profile" },
-                                    icon = { Text("⚙️", fontSize = 20.sp) },
-                                    label = { Text("Profile") }
+                                    icon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Rounded.Person, contentDescription = null) },
+                                    label = { Text("Profile") },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        selectedTextColor = androidx.compose.ui.graphics.Color(0xFF007AFF),
+                                        unselectedIconColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        unselectedTextColor = androidx.compose.ui.graphics.Color(0xFF8E8E93),
+                                        indicatorColor = androidx.compose.ui.graphics.Color(0xFF007AFF).copy(alpha = 0.10f)
+                                    )
                                 )
                             }
                         }

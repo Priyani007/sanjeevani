@@ -278,7 +278,7 @@ class AROverlayView(context: Context) : View(context) {
                 sphereCountLabelPaint.color = paceColor
                 val countY = py - baseRadius - 70f
                 canvas.drawText(spec.compressionCount.toString(), px, countY, sphereCountPaint)
-                canvas.drawText(if (spec.countReliable) "estimated cycles" else "tracking unavailable", px, countY + 35f, sphereCountLabelPaint)
+                canvas.drawText(if (spec.countReliable) "estimated cycles" else "push hard and fast", px, countY + 35f, sphereCountLabelPaint)
                 canvas.drawText("Pacing cue • not depth", px, py + baseRadius + 50f, sphereCountLabelPaint)
             }
         }

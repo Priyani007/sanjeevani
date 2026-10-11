@@ -34,13 +34,13 @@ class EmergencyFSM {
         FSMState.CPR_POSITIONING ->
             "They need CPR. Put them on their back. Ask someone to bring an AED. A firm surface is best, but do not delay CPR to move them off a bed or wait for the camera."
         FSMState.POSITION_CONFIRMED ->
-            "Position estimate stable. Check they are on their back. Kneel beside their chest. Say ready. Do not delay CPR to move them off a bed."
+            "Position confirmed. Kneel beside them. Tap Ready when set."
         FSMState.HAND_POSITIONING ->
             "Place the heel of one hand in the centre of the chest, on the lower half of the breastbone. Put your other hand on top. The marker is only an estimate."
         FSMState.POSTURE_CHECK ->
-            "Keep your arms straight and shoulders above your hands. Say ready to begin."
+            "Arms straight, shoulders above hands. Tap Ready."
         FSMState.COMPRESSION_ACTIVE ->
-            "Push hard and fast, five to six centimetres deep, at one hundred to one hundred twenty per minute. Let the chest rise fully. Follow the dispatcher and AED."
+            "Begin compressions!"
         FSMState.HEART_ATTACK_CONSCIOUS ->
             if (responding == true) "Keep them comfortable and still. Call one one two. Watch their breathing and tell me if they become unresponsive."
             else "They are breathing normally. Follow the dispatcher about positioning them safely. Watch their breathing. Tell me if their condition changes."
