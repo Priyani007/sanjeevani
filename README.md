@@ -1,3 +1,9 @@
+<div align="center">
+
+<img src="docs/screenshots/hero.png" alt="Sanjeevani — emergency first-responder training. Practice before the moment." width="100%" />
+
+</div>
+
 # Sanjeevani — AR Emergency First-Responder
 
 > *"Imagine someone next to you suddenly collapses. 112 has been called. What will you do with your hands for the next six minutes?"*
@@ -42,6 +48,23 @@ Point your camera at the scene. Sanjeevani detects the situation and talks you t
 | **Stroke** | FAST assessment with AR face/arm indicators — each step validated through MediaPipe landmarks |
 | **Heart attack** | Conscious patient protocol: sit upright, loosen clothing, aspirin guidance, monitor until 112 arrives |
 | **Anaphylaxis** | Timed 6-phase EpiPen sequence with AR injection-site marker on the outer thigh |
+
+### See it in action
+
+<div align="center">
+
+<img src="docs/screenshots/app-flow.png" alt="Sanjeevani app flow: position check, position confirmed, leg elevation waiting for camera, leg elevation detected" width="100%" />
+
+</div>
+
+| Screen | What's happening |
+|--------|------------------|
+| **1 · Position check** | Pose skeleton overlaid on the patient; red banner = position not yet verified by the camera |
+| **2 · Position confirmed** | Stable estimate turns the banner green; the rescuer still confirms posture and readiness manually |
+| **3 · Leg elevation** | Anaphylaxis flow, step 2 of 6 — an arrow guides you if the legs appear too low |
+| **4 · Step detected** | Camera-estimated leg raise registers and unlocks **Continue** |
+
+Every screen keeps **Call 112** one tap away, and voice guidance can be interrupted or muted for the dispatcher. Screens are from a simulation — green means a stable estimate, not clinical validation.
 
 ### Training platform
 
